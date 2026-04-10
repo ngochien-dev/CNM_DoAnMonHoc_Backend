@@ -61,7 +61,7 @@ app.post('/api/groups/create', async (req, res) => {
   const groupId = "group_" + Date.now();
   const item = { groupId, groupName, owner, isPublic: isPublic || false, isDisabled: false, members: isPublic ? [] : [owner], pendingRequests: [], createdAt: new Date().toISOString() };
   await docClient.put({ TableName: 'Groups', Item: item }).promise();
-  io.emit('groups_updated'); // Realtime tạo nhóm
+  io.emit('groups_updated');
   res.json(item);
 });
 
@@ -71,18 +71,41 @@ app.post('/api/groups/request', async (req, res) => {
   let pending = group.Item.pendingRequests || [];
   if (!pending.includes(username)) pending.push(username);
   await docClient.update({ TableName: 'Groups', Key: { groupId }, UpdateExpression: "set pendingRequests = :p", ExpressionAttributeValues: { ":p": pending } }).promise();
-  io.emit('groups_updated'); // Realtime yêu cầu tham gia
+  io.emit('groups_updated');
   res.json({ success: true });
 });
+
+// app.post('/api/groups/approve', async (req, res) => {
+//   const { groupId, targetUsername, action } = req.body;
+//   const data = await docClient.get({ TableName: 'Groups', Key: { groupId } }).promise();
+//   let { members, pendingRequests } = data.Item;
+//   pendingRequests = pendingRequests.filter(u => u !== targetUsername);
+//   if (action === 'accept' && !members.includes(targetUsername)) members.push(targetUsername);
+//   await docClient.update({ TableName: 'Groups', Key: { groupId }, UpdateExpression: "set members = :m, pendingRequests = :p", ExpressionAttributeValues: { ":m": members, ":p": pendingRequests } }).promise();
+//   io.emit('groups_updated');
+//   res.json({ success: true });
+// });
 
 app.post('/api/groups/approve', async (req, res) => {
   const { groupId, targetUsername, action } = req.body;
   const data = await docClient.get({ TableName: 'Groups', Key: { groupId } }).promise();
   let { members, pendingRequests } = data.Item;
+  
+  // Xóa khỏi danh sách chờ
   pendingRequests = pendingRequests.filter(u => u !== targetUsername);
-  if (action === 'accept' && !members.includes(targetUsername)) members.push(targetUsername);
-  await docClient.update({ TableName: 'Groups', Key: { groupId }, UpdateExpression: "set members = :m, pendingRequests = :p", ExpressionAttributeValues: { ":m": members, ":p": pendingRequests } }).promise();
-  io.emit('groups_updated'); // Realtime duyệt
+  
+  if (action === 'accept') {
+    if (!members.includes(targetUsername)) members.push(targetUsername);
+  }
+  
+  await docClient.update({ 
+    TableName: 'Groups', 
+    Key: { groupId }, 
+    UpdateExpression: "set members = :m, pendingRequests = :p", 
+    ExpressionAttributeValues: { ":m": members, ":p": pendingRequests } 
+  }).promise();
+  
+  io.emit('groups_updated'); 
   res.json({ success: true });
 });
 
@@ -114,7 +137,7 @@ app.post('/api/friends/request', async (req, res) => {
   let requests = target.Item.friendRequests || [];
   if (!requests.includes(fromUser)) requests.push(fromUser);
   await docClient.update({ TableName: 'Users', Key: { username: toUser }, UpdateExpression: "set friendRequests = :r", ExpressionAttributeValues: { ":r": requests } }).promise();
-  io.emit('groups_updated'); // Realtime báo có lời mời
+  io.emit('groups_updated');
   res.json({ success: true });
 });
 
@@ -129,7 +152,7 @@ app.post('/api/friends/accept', async (req, res) => {
   let fF = fData.Item.friends || [];
   if(!fF.includes(me)) fF.push(me);
   await docClient.update({ TableName: 'Users', Key: { username: friendUname }, UpdateExpression: "set friends = :f", ExpressionAttributeValues: { ":f": fF } }).promise();
-  io.emit('groups_updated'); // Realtime trở thành bạn bè
+  io.emit('groups_updated');
   res.json({ success: true });
 });
 
@@ -139,19 +162,15 @@ app.post('/api/friends/unfriend', async (req, res) => {
         const myData = await docClient.get({ TableName: 'Users', Key: { username: me } }).promise();
         let myF = (myData.Item.friends || []).filter(u => u !== friendUname);
         await docClient.update({ TableName: 'Users', Key: { username: me }, UpdateExpression: "set friends = :f", ExpressionAttributeValues: { ":f": myF } }).promise();
-
         const fData = await docClient.get({ TableName: 'Users', Key: { username: friendUname } }).promise();
         let fF = (fData.Item.friends || []).filter(u => u !== me);
         await docClient.update({ TableName: 'Users', Key: { username: friendUname }, UpdateExpression: "set friends = :f", ExpressionAttributeValues: { ":f": fF } }).promise();
-
-        // QUAN TRỌNG: Phát tín hiệu Realtime để máy bên kia load lại Sidebar
         io.emit('groups_updated'); 
-        
         res.json({ success: true });
     } catch (err) { res.status(500).json(err); }
 });
 
-// --- 4. PROFILE & TIN NHẮN ---
+// --- 4. PROFILE ---
 app.get('/api/users/:username', async (req, res) => {
   const data = await docClient.get({ TableName: 'Users', Key: { username: req.params.username } }).promise();
   if (data.Item) { const { password, ...safe } = data.Item; res.json(safe); }
@@ -159,8 +178,14 @@ app.get('/api/users/:username', async (req, res) => {
 });
 
 app.post('/api/users/update', async (req, res) => {
-  const { username, displayName, email, bio, phone, address, avatar } = req.body;
-  const params = { TableName: 'Users', Key: { username }, UpdateExpression: "set displayName = :d, email = :e, bio = :b, phone = :p, address = :a, avatar = :av", ExpressionAttributeValues: { ":d": displayName, ":e": email, ":b": bio||"", ":p": phone||"", ":a": address||"", ":av": avatar||null }, ReturnValues: "ALL_NEW" };
+  const { username, displayName, bio, phone, address, avatar } = req.body;
+  // CHẶN SỬA EMAIL (Bỏ field email khỏi UpdateExpression)
+  const params = { 
+    TableName: 'Users', Key: { username }, 
+    UpdateExpression: "set displayName = :d, bio = :b, phone = :p, address = :a, avatar = :av", 
+    ExpressionAttributeValues: { ":d": displayName, ":b": bio||"", ":p": phone||"", ":a": address||"", ":av": avatar||null }, 
+    ReturnValues: "ALL_NEW" 
+  };
   const data = await docClient.update(params).promise();
   res.json(data.Attributes);
 });
@@ -170,20 +195,80 @@ app.get('/api/messages/:username', async (req, res) => {
   res.json(data.Items.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)));
 });
 
+// Thêm API này vào server.js (trước đoạn socket)
+app.post('/api/messages/delete-for-me', async (req, res) => {
+  const { username, messageId } = req.body;
+  try {
+    const userData = await docClient.get({ TableName: 'Users', Key: { username } }).promise();
+    let deletedMsgs = userData.Item.deletedMessages || [];
+    
+    if (!deletedMsgs.includes(messageId)) {
+      deletedMsgs.push(messageId);
+    }
+
+    await docClient.update({
+      TableName: 'Users',
+      Key: { username },
+      UpdateExpression: "set deletedMessages = :d",
+      ExpressionAttributeValues: { ":d": deletedMsgs }
+    }).promise();
+
+    res.json({ success: true });
+  } catch (err) { res.status(500).json(err); }
+});
+
+// Và API xóa toàn bộ lịch sử (Clear chat)
+app.post('/api/messages/clear-history', async (req, res) => {
+    const { username, roomId } = req.body;
+    try {
+        // Lấy tất cả tin nhắn của phòng đó
+        const allMsgs = await docClient.scan({ 
+            TableName: 'Messages',
+            FilterExpression: "roomId = :r",
+            ExpressionAttributeValues: { ":r": roomId }
+        }).promise();
+        
+        const msgIdsInRoom = allMsgs.Items.map(m => m.messageId);
+        const userData = await docClient.get({ TableName: 'Users', Key: { username } }).promise();
+        let deletedMsgs = userData.Item.deletedMessages || [];
+        
+        // Thêm tất cả ID tin nhắn trong phòng này vào danh sách đã xóa của User
+        const newDeletedList = Array.from(new Set([...deletedMsgs, ...msgIdsInRoom]));
+
+        await docClient.update({
+            TableName: 'Users',
+            Key: { username },
+            UpdateExpression: "set deletedMessages = :d",
+            ExpressionAttributeValues: { ":d": newDeletedList }
+        }).promise();
+
+        res.json({ success: true });
+    } catch (err) { res.status(500).json(err); }
+});
+
 // --- 5. SOCKET REALTIME ---
+// Tìm đoạn io.on('connection', ...) và sửa lại hàm user_online
 io.on('connection', (socket) => {
-  socket.on('user_online', (u) => { if(u?.username){ onlineUsers[u.username] = {...u, socketId: socket.id}; io.emit('update_user_list', onlineUsers); }});
+  socket.on('user_online', (u) => { 
+    if(u?.username){ 
+      // Ghi đè thông tin mới nhất (avatar, displayName) vào danh sách online
+      onlineUsers[u.username] = {...u, socketId: socket.id}; 
+      io.emit('update_user_list', onlineUsers); 
+    }
+  });
+
   socket.on('admin_update_group', () => io.emit('groups_updated'));
-  socket.on('request_join_group', () => io.emit('groups_updated'));
   socket.on('send_message', async (d) => {
     const item = { messageId: Date.now().toString(), ...d, isRevoked: false, createdAt: new Date().toISOString() };
     await docClient.put({ TableName: 'Messages', Item: item }).promise();
     io.emit('receive_message', item);
   });
+  
   socket.on('revoke_message', async (id) => {
     await docClient.update({ TableName: 'Messages', Key: { messageId: id }, UpdateExpression: "set #t = :txt, isRevoked = :rev, fileData = :f, fileType = :ft", ExpressionAttributeNames: { "#t": "text" }, ExpressionAttributeValues: { ":txt": "Tin nhắn này đã bị thu hồi", ":rev": true, ":f": null, ":ft": null } }).promise();
     io.emit('message_revoked', id);
   });
+  
   socket.on('disconnect', () => {
     for(let u in onlineUsers) if(onlineUsers[u].socketId === socket.id){ delete onlineUsers[u]; break; }
     io.emit('update_user_list', onlineUsers);
