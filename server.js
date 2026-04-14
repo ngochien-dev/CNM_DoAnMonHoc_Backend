@@ -277,4 +277,8 @@ io.on('connection', (socket) => {
 
 const authRoutes = require('./routes/authRoutes');
 app.use('/api/auth', authRoutes);
+
+const chatbotRoutes = require('./routes/chatbotRoutes');
+app.use('/api', chatbotRoutes);
+
 httpServer.listen(3001, () => console.log(`🚀 OTT Server v5 Online`));
