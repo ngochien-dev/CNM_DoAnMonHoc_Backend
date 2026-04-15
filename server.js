@@ -343,3 +343,7 @@ app.get('/api/users/search', async (req, res) => {
         res.status(500).json(err);
     }
 });
+
+// --- 5. MESSAGE SEARCH ---
+const messageRoutes = require('./routes/messageRoutes');
+app.use('/api/v1/messages', messageRoutes);
