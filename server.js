@@ -1,5 +1,3 @@
-// backend/server.js
-
 const express = require('express');
 const cors = require('cors');
 const { createServer } = require('http');
@@ -121,16 +119,16 @@ app.post('/api/groups/remove-member', async (req, res) => {
 });
 
 // --- 3. HỆ THỐNG BẠN BÈ ---
-// app.post('/api/friends/request', async (req, res) => {
-//   const { fromUser, toUser } = req.body;
-//   const target = await docClient.get({ TableName: 'Users', Key: { username: toUser } }).promise();
-//   if(!target.Item) return res.status(404).send("User not found");
-//   let requests = target.Item.friendRequests || [];
-//   if (!requests.includes(fromUser)) requests.push(fromUser);
-//   await docClient.update({ TableName: 'Users', Key: { username: toUser }, UpdateExpression: "set friendRequests = :r", ExpressionAttributeValues: { ":r": requests } }).promise();
-//   io.emit('groups_updated');
-//   res.json({ success: true });
-// });
+app.post('/api/friends/request', async (req, res) => {
+  const { fromUser, toUser } = req.body;
+  const target = await docClient.get({ TableName: 'Users', Key: { username: toUser } }).promise();
+  if(!target.Item) return res.status(404).send("User not found");
+  let requests = target.Item.friendRequests || [];
+  if (!requests.includes(fromUser)) requests.push(fromUser);
+  await docClient.update({ TableName: 'Users', Key: { username: toUser }, UpdateExpression: "set friendRequests = :r", ExpressionAttributeValues: { ":r": requests } }).promise();
+  io.emit('groups_updated');
+  res.json({ success: true });
+});
 
 app.post('/api/friends/accept', async (req, res) => {
   const { me, friendUname } = req.body;
@@ -268,78 +266,11 @@ io.on('connection', (socket) => {
 
 const authRoutes = require('./routes/authRoutes');
 app.use('/api/auth', authRoutes);
+
+const chatbotRoutes = require('./routes/chatbotRoutes');
+app.use('/api', chatbotRoutes);
+
+const messageRoutes = require('./routes/messageRoutes');
+app.use('/api/v1/messages', messageRoutes);
+
 httpServer.listen(3001, () => console.log(`🚀 OTT Server v5 Online`));
-
-// Đổi mật khẩu
-const authController = require('./controllers/authController'); 
-app.post('/api/users/change-password', authController.changePassword);
-
-// API lưu kho thẻ và dữ liệu gán thẻ
-app.post('/api/users/sync-tags', async (req, res) => {
-    const { username, availableTags, friendTags } = req.body;
-    try {
-        await docClient.update({
-            TableName: 'Users',
-            Key: { username },
-            UpdateExpression: "set availableTags = :at, friendTags = :ft",
-            ExpressionAttributeValues: {
-                ":at": availableTags,
-                ":ft": friendTags
-            },
-            ReturnValues: "ALL_NEW"
-        }).promise();
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json(err);
-    }
-});
-
-app.post('/api/friends/request', async (req, res) => {
-    const { fromUser, toUser } = req.body;
-    try {
-        // 1. Ghi vào friendRequests của người NHẬN
-        const target = await docClient.get({ TableName: 'Users', Key: { username: toUser } }).promise();
-        let requests = target.Item.friendRequests || [];
-        if (!requests.includes(fromUser)) requests.push(fromUser);
-        await docClient.update({
-            TableName: 'Users', Key: { username: toUser },
-            UpdateExpression: "set friendRequests = :r",
-            ExpressionAttributeValues: { ":r": requests }
-        }).promise();
-
-        // 2. Ghi vào sentRequests của người GỬI (Field này DB bạn đang thiếu nè)
-        const me = await docClient.get({ TableName: 'Users', Key: { username: fromUser } }).promise();
-        let sent = me.Item.sentRequests || [];
-        if (!sent.includes(toUser)) sent.push(toUser);
-        await docClient.update({
-            TableName: 'Users', Key: { username: fromUser },
-            UpdateExpression: "set sentRequests = :s",
-            ExpressionAttributeValues: { ":s": sent }
-        }).promise();
-
-        io.emit('groups_updated');
-        res.json({ success: true });
-    } catch (err) { res.status(500).json(err); }
-});
-
-// --- API TÌM KIẾM NHÂN TỐ MỚI ---
-app.get('/api/users/search', async (req, res) => {
-    const { q } = req.query;
-    if (!q) return res.json([]);
-
-    try {
-        // Quét toàn bộ bảng Users (Vì DynamoDB scan khá tốn tài nguyên nên thực tế sau này Hiền nên dùng Index nhé)
-        const data = await docClient.scan({ TableName: 'Users' }).promise();
-        
-        // Lọc người dùng có username hoặc displayName chứa từ khóa q
-        const results = data.Items.filter(u => 
-            u.username.toLowerCase().includes(q.toLowerCase()) || 
-            (u.displayName && u.displayName.toLowerCase().includes(q.toLowerCase()))
-        ).map(({ password, ...safe }) => safe); // Bảo mật: Không trả mật khẩu về client
-
-        res.json(results);
-    } catch (err) {
-        console.error("Lỗi search:", err);
-        res.status(500).json(err);
-    }
-});
