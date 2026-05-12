@@ -23,6 +23,7 @@ const requestFriend = async (req, res) => {
     }));
 
     req.app.get('io').emit('groups_updated');
+    req.app.get('io').emit('new_friend_request', { toUser, fromUser });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json(err);
@@ -108,8 +109,33 @@ const unfriend = async (req, res) => {
   }
 };
 
+const rejectFriend = async (req, res) => {
+  try {
+    const { me, friendUname } = req.body;
+
+    const myData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username: me } }));
+    if (!myData.Item) return res.status(404).send("User not found");
+
+    // Remove from my friendRequests
+    let myR = (myData.Item.friendRequests || []).filter(u => u !== friendUname);
+
+    await docClient.send(new UpdateCommand({
+      TableName: 'Users',
+      Key: { username: me },
+      UpdateExpression: "set friendRequests = :r",
+      ExpressionAttributeValues: { ":r": myR }
+    }));
+
+    req.app.get('io').emit('groups_updated');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   requestFriend,
   acceptFriend,
-  unfriend
+  unfriend,
+  rejectFriend
 };

@@ -9,5 +9,7 @@ router.post('/approve', groupController.approveJoin);
 router.post('/manage', groupController.manageGroup);
 router.post('/remove-member', groupController.removeMember);
 router.post('/role', groupController.updateRole);
+router.post('/rename', groupController.renameGroup);
+router.post('/transfer-ownership', groupController.transferOwnership);
 
 module.exports = router;

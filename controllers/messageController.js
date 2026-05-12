@@ -179,16 +179,18 @@ exports.clearHistory = async (req, res) => {
 exports.pinMessage = async (req, res) => {
     const { messageId, isPinned } = req.body;
     try {
+        // Fetch message to get roomId for scoped emission
+        const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
+        if (!msgData.Item) return res.status(404).json({ error: "Message not found" });
+
         await docClient.send(new UpdateCommand({
             TableName: 'Messages',
             Key: { messageId },
             UpdateExpression: "set isPinned = :p",
             ExpressionAttributeValues: { ":p": isPinned }
         }));
-        // Emit socket event if you have req.app.get('io') available here, 
-        // or let the client handle it. Let's assume the client emits an event or we emit it.
         if (req.app.get('io')) {
-             req.app.get('io').emit('message_pinned', { messageId, isPinned });
+             req.app.get('io').emit('message_pinned', { messageId, isPinned, roomId: msgData.Item.roomId });
         }
         res.json({ success: true });
     } catch (err) {

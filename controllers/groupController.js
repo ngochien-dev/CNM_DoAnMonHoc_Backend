@@ -114,12 +114,19 @@ const approveJoin = async (req, res) => {
 const manageGroup = async (req, res) => {
   try {
     const { groupId, action } = req.body;
+    const callerUsername = req.auth.username;
 
     if (action === 'delete') {
+      // Only owner can delete
+      const group = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
+      if (!group.Item) return res.status(404).json({ error: "Group not found" });
+      if (group.Item.owner !== callerUsername) return res.status(403).json({ error: "Chỉ chủ nhóm mới có thể giải tán!" });
       await docClient.send(new DeleteCommand({ TableName: 'Groups', Key: { groupId } }));
     } else {
       const group = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
       if (!group.Item) return res.status(404).json({ error: "Group not found" });
+      // Only owner can toggle disable
+      if (group.Item.owner !== callerUsername) return res.status(403).json({ error: "Chỉ chủ nhóm mới có thể khóa/mở nhóm!" });
 
       await docClient.send(new UpdateCommand({
         TableName: 'Groups',
@@ -139,9 +146,23 @@ const manageGroup = async (req, res) => {
 const removeMember = async (req, res) => {
   try {
     const { groupId, targetUsername } = req.body;
+    const callerUsername = req.auth.username;
 
     const data = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
     if (!data.Item) return res.status(404).json({ error: "Group not found" });
+
+    const isOwner = data.Item.owner === callerUsername;
+    const isMod = (data.Item.mods || []).includes(callerUsername);
+    const isSelf = callerUsername === targetUsername; // Allow leaving
+
+    // Must be owner, mod, or leaving yourself
+    if (!isOwner && !isMod && !isSelf) return res.status(403).json({ error: "Bạn không có quyền kick thành viên!" });
+    // Mod cannot kick owner or other mods
+    if (isMod && !isOwner) {
+      if (targetUsername === data.Item.owner || (data.Item.mods || []).includes(targetUsername)) {
+        return res.status(403).json({ error: "Mod không thể kick chủ nhóm hoặc mod khác!" });
+      }
+    }
 
     let members = (data.Item.members || []).filter(u => u !== targetUsername);
 
@@ -162,9 +183,13 @@ const removeMember = async (req, res) => {
 const updateRole = async (req, res) => {
   try {
     const { groupId, targetUsername, action } = req.body;
+    const callerUsername = req.auth.username;
     // action: 'grant' or 'revoke'
     const data = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
     if (!data.Item) return res.status(404).json({ error: "Group not found" });
+
+    // Only owner can grant/revoke mod
+    if (data.Item.owner !== callerUsername) return res.status(403).json({ error: "Chỉ chủ nhóm mới có thể phân quyền!" });
 
     let mods = data.Item.mods || [];
     if (action === 'grant') {
@@ -187,6 +212,61 @@ const updateRole = async (req, res) => {
   }
 };
 
+const renameGroup = async (req, res) => {
+  try {
+    const { groupId, newName } = req.body;
+    const callerUsername = req.auth.username;
+    if (!newName?.trim()) return res.status(400).json({ error: "Tên nhóm không được để trống!" });
+
+    const data = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
+    if (!data.Item) return res.status(404).json({ error: "Group not found" });
+
+    const isOwner = data.Item.owner === callerUsername;
+    const isMod = (data.Item.mods || []).includes(callerUsername);
+    if (!isOwner && !isMod) return res.status(403).json({ error: "Bạn không có quyền đổi tên nhóm!" });
+
+    await docClient.send(new UpdateCommand({
+      TableName: 'Groups',
+      Key: { groupId },
+      UpdateExpression: "set groupName = :n",
+      ExpressionAttributeValues: { ":n": newName.trim() }
+    }));
+
+    req.app.get('io').emit('groups_updated');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
+const transferOwnership = async (req, res) => {
+  try {
+    const { groupId, newOwner } = req.body;
+    const callerUsername = req.auth.username;
+
+    const data = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
+    if (!data.Item) return res.status(404).json({ error: "Group not found" });
+    if (data.Item.owner !== callerUsername) return res.status(403).json({ error: "Chỉ chủ nhóm mới có thể chuyển quyền!" });
+    if (!(data.Item.members || []).includes(newOwner)) return res.status(400).json({ error: "Người nhận phải là thành viên của nhóm!" });
+
+    // Transfer: set new owner, remove new owner from mods if they were one
+    let mods = (data.Item.mods || []).filter(u => u !== newOwner);
+
+    await docClient.send(new UpdateCommand({
+      TableName: 'Groups',
+      Key: { groupId },
+      UpdateExpression: "set #o = :no, mods = :m",
+      ExpressionAttributeNames: { "#o": "owner" },
+      ExpressionAttributeValues: { ":no": newOwner, ":m": mods }
+    }));
+
+    req.app.get('io').emit('groups_updated');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   getAllGroups,
   createGroup,
@@ -194,5 +274,7 @@ module.exports = {
   approveJoin,
   manageGroup,
   removeMember,
-  updateRole
+  updateRole,
+  renameGroup,
+  transferOwnership
 };

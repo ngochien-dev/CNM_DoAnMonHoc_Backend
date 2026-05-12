@@ -4,6 +4,7 @@ const { createServer } = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
 
+const { requireAuth } = require('./middlewares/authMiddleware');
 const authRoutes = require('./routes/authRoutes');
 const chatbotRoutes = require('./routes/chatbotRoutes');
 const messageRoutes = require('./routes/messageRoutes');
@@ -31,14 +32,16 @@ app.use(express.json({ limit: '50mb' }));
 
 configureSockets(io);
 
+// Auth routes are public (login, register, forgot/reset password)
 app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api', chatbotRoutes);
-app.use('/api/v1/messages', messageRoutes);
-app.use('/api/calls', callRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/groups', groupRoutes);
-app.use('/api/friends', friendRoutes);
+// All other routes require authentication
+app.use('/api/users', requireAuth, userRoutes);
+app.use('/api', requireAuth, chatbotRoutes);
+app.use('/api/v1/messages', requireAuth, messageRoutes);
+app.use('/api/calls', requireAuth, callRoutes);
+app.use('/api/admin', requireAuth, adminRoutes);
+app.use('/api/groups', requireAuth, groupRoutes);
+app.use('/api/friends', requireAuth, friendRoutes);
 
 
 

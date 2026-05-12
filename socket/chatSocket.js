@@ -42,7 +42,12 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
     });
 
     socket.on('revoke_message', async (messageId) => {
-        const { UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+        const { GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+        // Verify ownership: only sender or admin can revoke
+        const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
+        if (!msgData.Item) return;
+        if (msgData.Item.senderUsername !== socket.user.username && socket.user.role !== 'admin') return;
+
         await docClient.send(new UpdateCommand({
             TableName: 'Messages',
             Key: { messageId },
@@ -59,7 +64,29 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
         io.emit('message_revoked', messageId);
     });
 
-    // --- Typing Events ---
+    socket.on('edit_message', async ({ messageId, newText }) => {
+        if (!messageId || !newText?.trim()) return;
+        const { GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+        // Verify ownership: only sender can edit
+        const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
+        if (!msgData.Item) return;
+        if (msgData.Item.senderUsername !== socket.user.username) return;
+        if (msgData.Item.isRevoked) return; // Can't edit revoked messages
+
+        await docClient.send(new UpdateCommand({
+            TableName: 'Messages',
+            Key: { messageId },
+            UpdateExpression: 'set #t = :txt, isEdited = :ed, editedAt = :ea',
+            ExpressionAttributeNames: { '#t': 'text' },
+            ExpressionAttributeValues: {
+                ':txt': newText.trim(),
+                ':ed': true,
+                ':ea': new Date().toISOString(),
+            },
+        }));
+
+        io.emit('message_edited', { messageId, newText: newText.trim(), isEdited: true, editedAt: new Date().toISOString() });
+    });
     socket.on('typing_start', (payload) => {
         // payload: { roomId: string, senderUsername: string }
         // Phát sự kiện cho tất cả mọi người (trừ người gửi)
