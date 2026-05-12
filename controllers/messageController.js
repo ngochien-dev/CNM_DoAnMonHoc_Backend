@@ -119,8 +119,19 @@ exports.searchPinnedMessages = async (req, res) => {
 // Basic operations that were previously in server.js
 exports.getMessages = async (req, res) => {
   try {
-    const data = await docClient.send(new ScanCommand({ TableName: 'Messages' }));
-    res.json((data.Items || []).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)));
+    let allItems = [];
+    let lastEvaluatedKey = undefined;
+
+    do {
+      const data = await docClient.send(new ScanCommand({ 
+        TableName: 'Messages',
+        ExclusiveStartKey: lastEvaluatedKey 
+      }));
+      allItems = allItems.concat(data.Items || []);
+      lastEvaluatedKey = data.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
+
+    res.json(allItems.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)));
   } catch (err) {
     res.status(500).json(err);
   }

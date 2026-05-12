@@ -24,21 +24,40 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
     socket.on('admin_update_group', () => io.emit('groups_updated'));
     socket.on('request_join_group', () => io.emit('groups_updated'));
 
-    socket.on('send_message', async (payload = {}) => {
-        const presenceProfile = presenceStore.getProfile(socket.user.username) || socket.user;
-        const item = {
-            messageId: Date.now().toString(),
-            ...payload,
-            sender: payload.sender || presenceProfile.displayName || socket.user.username,
-            senderUsername: socket.user.username,
-            roomId: payload.roomId || 'chung',
-            isRevoked: false,
-            createdAt: new Date().toISOString(),
-        };
+    const s3Service = require('../services/s3Service');
 
-        const { PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
-        await docClient.send(new PutCommand({ TableName: 'Messages', Item: item }));
-        io.emit('receive_message', item);
+    socket.on('send_message', async (payload = {}) => {
+        try {
+            let finalFileData = payload.fileData;
+            
+            // Nếu có file và đang ở định dạng base64 (data URI)
+            if (finalFileData && finalFileData.startsWith('data:')) {
+                // Upload lên S3 và lấy URL thay thế
+                finalFileData = await s3Service.uploadBase64File(
+                    finalFileData, 
+                    payload.fileName || 'file', 
+                    payload.fileType
+                );
+            }
+
+            const presenceProfile = presenceStore.getProfile(socket.user.username) || socket.user;
+            const item = {
+                messageId: Date.now().toString(),
+                ...payload,
+                fileData: finalFileData, // Sử dụng S3 URL thay vì base64
+                sender: payload.sender || presenceProfile.displayName || socket.user.username,
+                senderUsername: socket.user.username,
+                roomId: payload.roomId || 'chung',
+                isRevoked: false,
+                createdAt: new Date().toISOString(),
+            };
+
+            const { PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+            await docClient.send(new PutCommand({ TableName: 'Messages', Item: item }));
+            io.emit('receive_message', item);
+        } catch (error) {
+            console.error("Lỗi khi gửi tin nhắn/upload file:", error);
+        }
     });
 
     socket.on('revoke_message', async (messageId) => {
