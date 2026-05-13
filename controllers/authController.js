@@ -57,6 +57,7 @@ exports.login = async (req, res) => {
         const { username, password } = req.body;
         const user = await User.findByUsername(username);
         if (!user || !user.isVerified) return res.status(401).json({ message: "Tài khoản sai hoặc chưa xác thực!" });
+        if (user.isBanned) return res.status(403).json({ message: "Tài khoản đã bị khóa!" });
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(401).json({ message: "Sai mật khẩu!" });
@@ -117,6 +118,10 @@ exports.resetPassword = async (req, res) => {
             UpdateExpression: "set password = :p remove otp",
             ExpressionAttributeValues: { ":p": hashedPassword }
         }).promise();
+        
+        if (req.app.get('io')) {
+            req.app.get('io').emit('force_logout', { username: user.username, reason: 'password_reset' });
+        }
         res.json({ message: "Đổi mật khẩu thành công!" });
     } catch (err) { res.status(500).json({ message: err.message }); }
 };
@@ -136,6 +141,10 @@ exports.changePassword = async (req, res) => {
             UpdateExpression: "set password = :p",
             ExpressionAttributeValues: { ":p": hashedPassword }
         }).promise();
+        
+        if (req.app.get('io')) {
+            req.app.get('io').emit('force_logout', { username, reason: 'password_changed' });
+        }
         res.json({ success: true, message: "Đổi mật khẩu thành công!" });
     } catch (err) { res.status(500).json({ message: err.message }); }
 };

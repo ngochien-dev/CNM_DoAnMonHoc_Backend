@@ -11,7 +11,7 @@ function extractBearerToken(headerValue = '') {
 async function loadVerifiedUser(username) {
     if (!username) return null;
     const user = await User.findByUsername(username);
-    if (!user || !user.isVerified) return null;
+    if (!user || !user.isVerified || user.isBanned) return null;
     return user;
 }
 
