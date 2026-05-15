@@ -1,6 +1,7 @@
 const userConnections = new Map();
 const socketToUser = new Map();
 const userProfiles = new Map();
+const lastSeenMap = new Map(); // P1: Track last seen timestamps
 
 function normalizeProfile(profile = {}) {
     return {
@@ -38,6 +39,8 @@ function removeConnection(socketId) {
     if (existingSockets.size === 0) {
         userConnections.delete(username);
         userProfiles.delete(username);
+        // P1: Record last seen timestamp when user goes fully offline
+        lastSeenMap.set(username, new Date().toISOString());
         return { username, stillOnline: false };
     }
 
@@ -51,6 +54,25 @@ function getProfile(username) {
 
 function isOnline(username) {
     return userConnections.has(username);
+}
+
+// P1: Get last seen timestamp for a user
+function getLastSeen(username) {
+    if (isOnline(username)) return null; // Currently online, no "last seen"
+    return lastSeenMap.get(username) || null;
+}
+
+// P1: Get last seen for multiple users
+function getLastSeenBatch(usernames) {
+    const result = {};
+    for (const username of usernames) {
+        if (isOnline(username)) {
+            result[username] = null; // online
+        } else {
+            result[username] = lastSeenMap.get(username) || null;
+        }
+    }
+    return result;
 }
 
 function getOnlineUsers() {
@@ -70,6 +92,8 @@ module.exports = {
     getOnlineUsers,
     getProfile,
     isOnline,
+    getLastSeen,
+    getLastSeenBatch,
     registerConnection,
     removeConnection,
     updateProfile,

@@ -11,5 +11,6 @@ router.post('/remove-member', groupController.removeMember);
 router.post('/role', groupController.updateRole);
 router.post('/rename', groupController.renameGroup);
 router.post('/transfer-ownership', groupController.transferOwnership);
+router.post('/invite', groupController.inviteToGroup);
 
 module.exports = router;

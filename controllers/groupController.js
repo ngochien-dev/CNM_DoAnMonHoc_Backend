@@ -267,6 +267,46 @@ const transferOwnership = async (req, res) => {
   }
 };
 
+// P1: Invite user directly to group (owner/mod only)
+const inviteToGroup = async (req, res) => {
+  try {
+    const { groupId, targetUsername } = req.body;
+    const callerUsername = req.auth.username;
+
+    const data = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
+    if (!data.Item) return res.status(404).json({ error: "Group not found" });
+
+    const isOwner = data.Item.owner === callerUsername;
+    const isMod = (data.Item.mods || []).includes(callerUsername);
+    if (!isOwner && !isMod) return res.status(403).json({ error: "Chỉ chủ nhóm hoặc MOD mới có thể mời thành viên!" });
+
+    // Check if target user exists
+    const targetData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username: targetUsername } }));
+    if (!targetData.Item) return res.status(404).json({ error: "Người dùng không tồn tại!" });
+
+    let members = data.Item.members || [];
+    if (members.includes(targetUsername)) {
+      return res.status(400).json({ error: "Người dùng đã là thành viên!" });
+    }
+
+    members.push(targetUsername);
+    // Also remove from pending if they had a pending request
+    let pending = (data.Item.pendingRequests || []).filter(u => u !== targetUsername);
+
+    await docClient.send(new UpdateCommand({
+      TableName: 'Groups',
+      Key: { groupId },
+      UpdateExpression: "set members = :m, pendingRequests = :p",
+      ExpressionAttributeValues: { ":m": members, ":p": pending }
+    }));
+
+    req.app.get('io').emit('groups_updated');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   getAllGroups,
   createGroup,
@@ -276,5 +316,6 @@ module.exports = {
   removeMember,
   updateRole,
   renameGroup,
-  transferOwnership
+  transferOwnership,
+  inviteToGroup
 };
