@@ -1,6 +1,6 @@
 const messageService = require('../services/messageService');
 const docClient = require('../awsConfig');
-const { ScanCommand, GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const { ScanCommand, GetCommand, UpdateCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
 
 // Simple search by content
 exports.searchByContent = async (req, res) => {
@@ -116,9 +116,49 @@ exports.searchPinnedMessages = async (req, res) => {
   }
 };
 
-// Basic operations that were previously in server.js
+// ====== P0: PAGINATION — Load messages per room with limit + cursor ======
 exports.getMessages = async (req, res) => {
   try {
+    const { roomId, limit, before } = req.query;
+    const pageSize = Math.min(parseInt(limit) || 50, 100); // Max 100 per request
+
+    // If roomId is specified, fetch messages for that room only (efficient)
+    if (roomId) {
+      let allItems = [];
+      let lastKey = undefined;
+
+      do {
+        const params = {
+          TableName: 'Messages',
+          FilterExpression: 'roomId = :r',
+          ExpressionAttributeValues: { ':r': roomId },
+          ExclusiveStartKey: lastKey,
+        };
+        const data = await docClient.send(new ScanCommand(params));
+        allItems = allItems.concat(data.Items || []);
+        lastKey = data.LastEvaluatedKey;
+      } while (lastKey);
+
+      // Sort by createdAt descending, then apply cursor + limit
+      allItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      // If 'before' timestamp is provided, filter messages before that time
+      if (before) {
+        allItems = allItems.filter(m => new Date(m.createdAt) < new Date(before));
+      }
+
+      // Take only 'pageSize' messages, then reverse to chronological order
+      const page = allItems.slice(0, pageSize).reverse();
+      const hasMore = allItems.length > pageSize;
+
+      return res.json({
+        messages: page,
+        hasMore,
+        nextCursor: hasMore ? page[0]?.createdAt : null,
+      });
+    }
+
+    // Fallback: load ALL messages (legacy behavior for initial load)
     let allItems = [];
     let lastEvaluatedKey = undefined;
 
@@ -304,5 +344,55 @@ exports.reactToMessage = async (req, res) => {
         res.json({ success: true });
     } catch (err) {
         res.status(500).json(err);
+    }
+};
+
+// ====== P0: READ RECEIPTS — Mark messages as read ======
+exports.markAsRead = async (req, res) => {
+    const { messageIds, username } = req.body;
+    if (!messageIds || !Array.isArray(messageIds) || !username) {
+        return res.status(400).json({ error: 'messageIds (array) and username are required' });
+    }
+
+    try {
+        // Batch update readBy for each message (limit to 20 per request to avoid overload)
+        const idsToProcess = messageIds.slice(0, 20);
+        const updatePromises = idsToProcess.map(async (messageId) => {
+            try {
+                const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
+                if (!msgData.Item) return null;
+
+                let readBy = msgData.Item.readBy || [];
+                if (readBy.includes(username)) return null; // Already read
+
+                readBy.push(username);
+                await docClient.send(new UpdateCommand({
+                    TableName: 'Messages',
+                    Key: { messageId },
+                    UpdateExpression: "set readBy = :r",
+                    ExpressionAttributeValues: { ":r": readBy }
+                }));
+
+                return { messageId, readBy };
+            } catch (e) {
+                console.error(`Error marking message ${messageId} as read:`, e);
+                return null;
+            }
+        });
+
+        const results = (await Promise.all(updatePromises)).filter(Boolean);
+
+        // Emit read receipt updates via socket
+        if (req.app.get('io') && results.length > 0) {
+            req.app.get('io').emit('messages_read', {
+                messageIds: results.map(r => r.messageId),
+                readBy: results.map(r => ({ messageId: r.messageId, readBy: r.readBy })),
+                reader: username,
+            });
+        }
+
+        res.json({ success: true, updated: results.length });
+    } catch (err) {
+        res.status(500).json({ error: 'Error marking messages as read' });
     }
 };

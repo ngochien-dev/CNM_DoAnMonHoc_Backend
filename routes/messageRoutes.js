@@ -34,5 +34,6 @@ router.post('/pin', messageController.pinMessage);
 router.post('/vote', messageController.votePoll);
 router.post('/attend-event', messageController.attendEvent);
 router.post('/react', messageController.reactToMessage);
+router.post('/mark-read', messageController.markAsRead);
 
 module.exports = router;

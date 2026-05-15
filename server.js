@@ -2,9 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const { requireAuth } = require('./middlewares/authMiddleware');
+const { sanitizeMiddleware } = require('./middlewares/sanitize');
 const authRoutes = require('./routes/authRoutes');
 const chatbotRoutes = require('./routes/chatbotRoutes');
 const messageRoutes = require('./routes/messageRoutes');
@@ -21,7 +23,7 @@ const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: "*",
     methods: ["GET", "POST"]
   }
 });
@@ -30,21 +32,41 @@ app.set('io', io);
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// P0: Input sanitization — clean all incoming data (XSS protection)
+app.use(sanitizeMiddleware);
+
+// P0: Rate limiting — prevent brute-force and spam
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // max 20 requests per window per IP
+  message: { message: 'Quá nhiều yêu cầu, vui lòng thử lại sau 15 phút.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 120, // max 120 requests per minute per IP
+  message: { message: 'Quá nhiều yêu cầu, vui lòng thử lại sau.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 configureSockets(io);
 
-// Auth routes are public (login, register, forgot/reset password)
-app.use('/api/auth', authRoutes);
-// All other routes require authentication
-app.use('/api/users', requireAuth, userRoutes);
-app.use('/api', requireAuth, chatbotRoutes);
-app.use('/api/v1/messages', requireAuth, messageRoutes);
-app.use('/api/calls', requireAuth, callRoutes);
-app.use('/api/admin', requireAuth, adminRoutes);
-app.use('/api/groups', requireAuth, groupRoutes);
-app.use('/api/friends', requireAuth, friendRoutes);
+// Auth routes are public — apply strict rate limit (anti brute-force)
+app.use('/api/auth', authLimiter, authRoutes);
+// All other routes require authentication + general rate limit
+app.use('/api/users', apiLimiter, requireAuth, userRoutes);
+app.use('/api', apiLimiter, requireAuth, chatbotRoutes);
+app.use('/api/v1/messages', apiLimiter, requireAuth, messageRoutes);
+app.use('/api/calls', apiLimiter, requireAuth, callRoutes);
+app.use('/api/admin', apiLimiter, requireAuth, adminRoutes);
+app.use('/api/groups', apiLimiter, requireAuth, groupRoutes);
+app.use('/api/friends', apiLimiter, requireAuth, friendRoutes);
 
 
 
 httpServer.listen(3001, () => {
-  console.log('🚀 OTT Server v6 Online');
+  console.log('🚀 OTT Server v7 Online — with Sanitization + Rate Limiting');
 });
