@@ -15,6 +15,8 @@ const callRoutes = require('./routes/callRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const groupRoutes = require('./routes/groupRoutes');
 const friendRoutes = require('./routes/friendRoutes');
+const searchRoutes = require('./routes/searchRoutes');
+const utilsRoutes = require('./routes/utilsRoutes');
 
 const configureSockets = require('./socket');
 
@@ -64,6 +66,8 @@ app.use('/api/calls', apiLimiter, requireAuth, callRoutes);
 app.use('/api/admin', apiLimiter, requireAuth, adminRoutes);
 app.use('/api/groups', apiLimiter, requireAuth, groupRoutes);
 app.use('/api/friends', apiLimiter, requireAuth, friendRoutes);
+app.use('/api/search', apiLimiter, requireAuth, searchRoutes);
+app.use('/api/utils', apiLimiter, requireAuth, utilsRoutes);
 
 
 
