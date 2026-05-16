@@ -396,3 +396,47 @@ exports.markAsRead = async (req, res) => {
         res.status(500).json({ error: 'Error marking messages as read' });
     }
 };
+
+exports.getRoomMedia = async (req, res) => {
+    const { roomId } = req.params;
+    try {
+        const data = await docClient.send(new ScanCommand({
+            TableName: 'Messages',
+            FilterExpression: "roomId = :r AND isRevoked <> :true",
+            ExpressionAttributeValues: { 
+                ":r": roomId,
+                ":true": true
+            }
+        }));
+
+        const items = data.Items || [];
+        const urlRegex = /((?:https?:\/\/|www\.)[^\s]+|[a-zA-Z0-9.-]+\.(?:com|net|org|vn|edu|gov|io)[^\s]*)/g;
+
+        const media = items.filter(m => m.fileData && (m.fileType === 'image' || m.fileType === 'video'))
+            .map(m => ({ messageId: m.messageId, fileData: m.fileData, fileType: m.fileType, sentAt: m.sentAt, senderUsername: m.senderUsername }));
+            
+        const files = items.filter(m => m.fileData && m.fileType !== 'image' && m.fileType !== 'video')
+            .map(m => ({ messageId: m.messageId, fileData: m.fileData, fileName: m.fileName, fileType: m.fileType, sentAt: m.sentAt, senderUsername: m.senderUsername }));
+
+        const links = [];
+        items.forEach(m => {
+            if (m.text) {
+                const matches = m.text.match(urlRegex);
+                if (matches) {
+                    matches.forEach(url => {
+                        links.push({ messageId: m.messageId, url: url.replace(/\.+$/, '').trim(), sentAt: m.sentAt, senderUsername: m.senderUsername, text: m.text });
+                    });
+                }
+            }
+        });
+
+        res.json({
+            media: media.sort((a, b) => b.sentAt - a.sentAt),
+            files: files.sort((a, b) => b.sentAt - a.sentAt),
+            links: links.sort((a, b) => b.sentAt - a.sentAt)
+        });
+    } catch (err) {
+        console.error("GetRoomMedia error:", err);
+        res.status(500).json({ error: "Could not fetch room media" });
+    }
+};

@@ -27,6 +27,7 @@ router.get('/search/edited', messageController.searchEditedMessages);
 router.get('/search/pinned', messageController.searchPinnedMessages);
 
 // Basic messaging operations
+router.get('/room/:roomId/media', messageController.getRoomMedia);
 router.get('/:username', messageController.getMessages);
 router.post('/delete-for-me', messageController.deleteForMe);
 router.post('/clear-history', messageController.clearHistory);
