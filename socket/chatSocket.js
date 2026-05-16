@@ -75,8 +75,10 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
                 createdAt: new Date().toISOString(),
             };
 
-            const { PutCommand } = require("@aws-sdk/lib-dynamodb");
-            await docClient.send(new PutCommand({ TableName: 'Messages', Item: item }));
+            if (!payload.isSecret) {
+                const { PutCommand } = require("@aws-sdk/lib-dynamodb");
+                await docClient.send(new PutCommand({ TableName: 'Messages', Item: item }));
+            }
             io.emit('receive_message', item);
         } catch (error) {
             console.error("Lỗi khi gửi tin nhắn/upload file:", error);

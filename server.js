@@ -48,7 +48,7 @@ const authLimiter = rateLimit({
 
 const apiLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: 120, // max 120 requests per minute per IP
+  max: 300, // Increased to 300 for rich OTT features
   message: { message: 'Quá nhiều yêu cầu, vui lòng thử lại sau.' },
   standardHeaders: true,
   legacyHeaders: false,
