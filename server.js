@@ -17,6 +17,7 @@ const groupRoutes = require('./routes/groupRoutes');
 const friendRoutes = require('./routes/friendRoutes');
 const searchRoutes = require('./routes/searchRoutes');
 const utilsRoutes = require('./routes/utilsRoutes');
+const storyRoutes = require('./routes/storyRoutes');
 
 const configureSockets = require('./socket');
 
@@ -68,6 +69,7 @@ app.use('/api/groups', apiLimiter, requireAuth, groupRoutes);
 app.use('/api/friends', apiLimiter, requireAuth, friendRoutes);
 app.use('/api/search', apiLimiter, requireAuth, searchRoutes);
 app.use('/api/utils', apiLimiter, requireAuth, utilsRoutes);
+app.use('/api/stories', apiLimiter, requireAuth, storyRoutes);
 
 
 

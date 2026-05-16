@@ -12,7 +12,7 @@ const getAllGroups = async (req, res) => {
 
 const createGroup = async (req, res) => {
   try {
-    const { groupName, owner, isPublic } = req.body;
+    const { groupName, owner, isPublic, isChannel } = req.body;
     const groupId = "group_" + Date.now();
 
     const item = {
@@ -20,6 +20,7 @@ const createGroup = async (req, res) => {
       groupName,
       owner,
       isPublic: isPublic || false,
+      isChannel: isChannel || false,
       isDisabled: false,
       members: isPublic ? [] : [owner],
       pendingRequests: [],
