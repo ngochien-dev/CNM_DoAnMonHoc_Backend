@@ -108,7 +108,7 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
         io.emit('message_revoked', messageId);
     });
 
-    socket.on('edit_message', async ({ messageId, newText }) => {
+    socket.on('edit_message', async ({ messageId, newText, iv }) => {
         if (!messageId || !newText?.trim()) return;
         
         // P0: Sanitize edited text
@@ -122,19 +122,26 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
         if (msgData.Item.senderUsername !== socket.user.username) return;
         if (msgData.Item.isRevoked) return; // Can't edit revoked messages
 
+        const updateExpression = iv 
+            ? 'set #t = :txt, iv = :iv, isEdited = :ed, editedAt = :ea'
+            : 'set #t = :txt, isEdited = :ed, editedAt = :ea';
+
+        const expressionAttributeValues = {
+            ':txt': safeText,
+            ':ed': true,
+            ':ea': new Date().toISOString(),
+            ...(iv && { ':iv': iv })
+        };
+
         await docClient.send(new UpdateCommand({
             TableName: 'Messages',
             Key: { messageId },
-            UpdateExpression: 'set #t = :txt, isEdited = :ed, editedAt = :ea',
+            UpdateExpression: updateExpression,
             ExpressionAttributeNames: { '#t': 'text' },
-            ExpressionAttributeValues: {
-                ':txt': safeText,
-                ':ed': true,
-                ':ea': new Date().toISOString(),
-            },
+            ExpressionAttributeValues: expressionAttributeValues,
         }));
 
-        io.emit('message_edited', { messageId, newText: safeText, isEdited: true, editedAt: new Date().toISOString() });
+        io.emit('message_edited', { messageId, newText: safeText, iv, isEdited: true, editedAt: new Date().toISOString() });
     });
 
     // P0: Read Receipts via Socket — lightweight real-time read notifications
@@ -186,6 +193,22 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
 
     socket.on('typing_end', (payload) => {
         socket.broadcast.emit('user_typing_end', payload);
+    });
+
+    socket.on('request_secret_chat', ({ roomId, senderUsername }) => {
+        socket.broadcast.emit('secret_chat_request', { roomId, requester: senderUsername });
+    });
+
+    socket.on('accept_secret_chat', ({ roomId, requester }) => {
+        io.emit('secret_chat_established', { roomId });
+    });
+
+    socket.on('decline_secret_chat', ({ roomId, requester }) => {
+        socket.broadcast.emit('secret_chat_declined', { roomId, decliner: socket.user.username });
+    });
+
+    socket.on('close_secret_chat', ({ roomId }) => {
+        io.emit('secret_chat_closed', { roomId, sender: socket.user.username });
     });
 
     socket.on('disconnect', () => {

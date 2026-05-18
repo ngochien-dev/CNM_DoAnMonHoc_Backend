@@ -99,10 +99,26 @@ const toggle2FA = async (req, res) => {
   }
 };
 
+const updateE2EEKey = async (req, res) => {
+  try {
+    const { username, e2eePublicKey } = req.body;
+    await docClient.send(new UpdateCommand({
+      TableName: 'Users',
+      Key: { username },
+      UpdateExpression: "set e2eePublicKey = :k",
+      ExpressionAttributeValues: { ":k": e2eePublicKey }
+    }));
+    res.json({ success: true, e2eePublicKey });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   getUser,
   updateUser,
   syncTags,
   togglePinRoom,
-  toggle2FA
+  toggle2FA,
+  updateE2EEKey
 };

@@ -120,24 +120,53 @@ exports.searchPinnedMessages = async (req, res) => {
 exports.getMessages = async (req, res) => {
   try {
     const { roomId, limit, before } = req.query;
+    const { username } = req.params;
     const pageSize = Math.min(parseInt(limit) || 50, 100); // Max 100 per request
+
+    // Fetch user's deleted messages list
+    let deletedMessages = [];
+    if (username) {
+      const userData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username } }));
+      if (userData.Item) {
+        deletedMessages = userData.Item.deletedMessages || [];
+      }
+    }
+    const deletedSet = new Set(deletedMessages);
 
     // If roomId is specified, fetch messages for that room only (efficient)
     if (roomId) {
       let allItems = [];
       let lastKey = undefined;
 
+      // Handle both potential orders of usernames in DM room IDs to fetch legacy messages
+      let filterExpression = "roomId = :r";
+      let expressionValues = { ":r": roomId };
+
+      if (roomId.startsWith('dm_')) {
+          const parts = roomId.replace('dm_', '').split('_');
+          if (parts.length === 2) {
+              const altRoomId = `dm_${parts[1]}_${parts[0]}`;
+              if (altRoomId !== roomId) {
+                  filterExpression = "roomId = :r1 OR roomId = :r2";
+                  expressionValues = { ":r1": roomId, ":r2": altRoomId };
+              }
+          }
+      }
+
       do {
         const params = {
           TableName: 'Messages',
-          FilterExpression: 'roomId = :r',
-          ExpressionAttributeValues: { ':r': roomId },
+          FilterExpression: filterExpression,
+          ExpressionAttributeValues: expressionValues,
           ExclusiveStartKey: lastKey,
         };
         const data = await docClient.send(new ScanCommand(params));
         allItems = allItems.concat(data.Items || []);
         lastKey = data.LastEvaluatedKey;
       } while (lastKey);
+
+      // Filter out deleted messages
+      allItems = allItems.filter(m => !deletedSet.has(m.messageId));
 
       // Sort by createdAt descending, then apply cursor + limit
       allItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
@@ -171,6 +200,32 @@ exports.getMessages = async (req, res) => {
       lastEvaluatedKey = data.LastEvaluatedKey;
     } while (lastEvaluatedKey);
 
+    // Fetch user's active groups to securely filter group messages
+    const groupsData = await docClient.send(new ScanCommand({ TableName: 'Groups' }));
+    const myGroupIds = (groupsData.Items || [])
+      .filter(g => g.owner === username || (g.members || []).includes(username))
+      .map(g => g.groupId);
+    const myGroupSet = new Set(myGroupIds);
+
+    // Securely filter out deleted messages and messages that do not belong to this user
+    allItems = allItems.filter(m => {
+      // 1. Filter out deleted messages
+      if (deletedSet.has(m.messageId)) return false;
+
+      // 2. Filter DM messages: the user's username must be one of the participants
+      if (m.roomId && m.roomId.startsWith('dm_')) {
+        const parts = m.roomId.replace('dm_', '').split('_');
+        return parts.includes(username);
+      }
+
+      // 3. Filter Group messages: the user must be a member of the group
+      if (m.roomId) {
+        return myGroupSet.has(m.roomId);
+      }
+
+      return false;
+    });
+
     res.json(allItems.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)));
   } catch (err) {
     res.status(500).json(err);
@@ -203,13 +258,37 @@ exports.deleteForMe = async (req, res) => {
 exports.clearHistory = async (req, res) => {
     const { username, roomId } = req.body;
     try {
-        const allMsgs = await docClient.send(new ScanCommand({ 
-            TableName: 'Messages',
-            FilterExpression: "roomId = :r",
-            ExpressionAttributeValues: { ":r": roomId }
-        }));
+        let allItems = [];
+        let lastKey = undefined;
+
+        // Support both orders of usernames in DM room IDs to clear legacy messages
+        let filterExpression = "roomId = :r";
+        let expressionValues = { ":r": roomId };
+
+        if (roomId.startsWith('dm_')) {
+            const parts = roomId.replace('dm_', '').split('_');
+            if (parts.length === 2) {
+                const altRoomId = `dm_${parts[1]}_${parts[0]}`;
+                if (altRoomId !== roomId) {
+                    filterExpression = "roomId = :r1 OR roomId = :r2";
+                    expressionValues = { ":r1": roomId, ":r2": altRoomId };
+                }
+            }
+        }
+
+        do {
+            const params = {
+                TableName: 'Messages',
+                FilterExpression: filterExpression,
+                ExpressionAttributeValues: expressionValues,
+                ExclusiveStartKey: lastKey,
+            };
+            const data = await docClient.send(new ScanCommand(params));
+            allItems = allItems.concat(data.Items || []);
+            lastKey = data.LastEvaluatedKey;
+        } while (lastKey);
         
-        const msgIdsInRoom = (allMsgs.Items || []).map(m => m.messageId);
+        const msgIdsInRoom = allItems.map(m => m.messageId);
         const userData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username } }));
         if (!userData.Item) return res.status(404).send("User not found");
         
