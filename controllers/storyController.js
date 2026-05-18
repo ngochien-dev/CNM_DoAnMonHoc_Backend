@@ -113,3 +113,17 @@ exports.reactStory = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+
+exports.getArchive = async (req, res) => {
+    try {
+        const username = req.auth.username;
+        const result = await docClient.send(new ScanCommand({
+            TableName: "Stories",
+            FilterExpression: "username = :u",
+            ExpressionAttributeValues: { ":u": username }
+        }));
+        res.json(result.Items || []);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
