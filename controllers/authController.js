@@ -51,6 +51,49 @@ exports.verify = async (req, res) => {
     } catch (err) { res.status(500).json({ message: err.message }); }
 };
 
+// Helper to parse User-Agent
+function parseUserAgent(ua) {
+    if (!ua) return "Thiết bị không xác định";
+    let os = "Không rõ OS";
+    let browser = "Không rõ trình duyệt";
+
+    if (ua.includes("Windows")) os = "Windows";
+    else if (ua.includes("Macintosh")) os = "macOS";
+    else if (ua.includes("Linux")) os = "Linux";
+    else if (ua.includes("Android")) os = "Android";
+    else if (ua.includes("iPhone") || ua.includes("iPad")) os = "iOS";
+
+    if (ua.includes("Firefox")) browser = "Firefox";
+    else if (ua.includes("Edg")) browser = "Edge";
+    else if (ua.includes("Chrome")) browser = "Chrome";
+    else if (ua.includes("Safari")) browser = "Safari";
+    else if (ua.includes("Opera")) browser = "Opera";
+
+    return `${os} (${browser})`;
+}
+
+// Helper to register active session
+async function registerActiveSession(user, req) {
+    const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const newSession = {
+        sessionId,
+        device: parseUserAgent(req.headers['user-agent']),
+        ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1',
+        loginAt: new Date().toISOString()
+    };
+    const activeSessions = user.activeSessions || [];
+    const updatedSessions = [...activeSessions.slice(-9), newSession]; // keep max 10
+    
+    await docClient.update({
+        TableName: 'Users',
+        Key: { username: user.username },
+        UpdateExpression: "set activeSessions = :s",
+        ExpressionAttributeValues: { ":s": updatedSessions }
+    }).promise();
+    
+    return sessionId;
+}
+
 // 3. Đăng nhập
 exports.login = async (req, res) => {
     try {
@@ -86,7 +129,8 @@ exports.login = async (req, res) => {
         }
 
         const token = jwt.sign({ username: user.username }, process.env.JWT_SECRET, { expiresIn: '1d' });
-        res.json({ token, username: user.username, displayName: user.displayName, role: user.role, avatar: user.avatar });
+        const sessionId = await registerActiveSession(user, req);
+        res.json({ token, username: user.username, displayName: user.displayName, role: user.role, avatar: user.avatar, sessionId });
     } catch (err) { res.status(500).json({ message: "Lỗi đăng nhập" }); }
 };
 
@@ -106,7 +150,8 @@ exports.verify2FA = async (req, res) => {
         }).promise();
 
         const token = jwt.sign({ username: user.username }, process.env.JWT_SECRET, { expiresIn: '1d' });
-        res.json({ token, username: user.username, displayName: user.displayName, role: user.role, avatar: user.avatar });
+        const sessionId = await registerActiveSession(user, req);
+        res.json({ token, username: user.username, displayName: user.displayName, role: user.role, avatar: user.avatar, sessionId });
     } catch (err) { res.status(500).json({ message: "Lỗi xác thực 2FA" }); }
 };
 

@@ -29,6 +29,15 @@ async function requireAuth(req, res, next) {
             return res.status(401).json({ message: 'Token không hợp lệ hoặc tài khoản không tồn tại.' });
         }
 
+        // Validate session ID if provided
+        const clientSessionId = req.headers['x-session-id'];
+        if (clientSessionId && user.activeSessions) {
+            const hasSession = user.activeSessions.some(s => s.sessionId === clientSessionId);
+            if (!hasSession) {
+                return res.status(401).json({ message: 'Phiên hoạt động này đã bị đăng xuất hoặc không hợp lệ.' });
+            }
+        }
+
         req.auth = {
             username: user.username,
             displayName: user.displayName,

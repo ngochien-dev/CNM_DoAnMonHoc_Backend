@@ -114,11 +114,66 @@ const updateE2EEKey = async (req, res) => {
   }
 };
 
+const getActiveSessions = async (req, res) => {
+  try {
+    const targetUser = req.auth?.username || req.body.username;
+    if (!targetUser) return res.status(400).json({ message: "Thiếu tên người dùng" });
+
+    const data = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username: targetUser } }));
+    if (data.Item) {
+      res.json(data.Item.activeSessions || []);
+    } else {
+      res.status(404).send("Not found");
+    }
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
+const terminateSession = async (req, res) => {
+  try {
+    const { username, sessionId } = req.body;
+    const targetUser = req.auth?.username || username;
+    if (!targetUser || !sessionId) return res.status(400).json({ message: "Thiếu tham số bắt buộc" });
+
+    const userData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username: targetUser } }));
+    if (!userData.Item) return res.status(404).send("User not found");
+
+    const activeSessions = userData.Item.activeSessions || [];
+    const updatedSessions = activeSessions.filter(s => s.sessionId !== sessionId);
+
+    await docClient.send(new UpdateCommand({
+      TableName: 'Users',
+      Key: { username: targetUser },
+      UpdateExpression: "set activeSessions = :s",
+      ExpressionAttributeValues: { ":s": updatedSessions }
+    }));
+
+    // Gửi sự kiện Socket Force Logout nếu io tồn tại
+    const io = req.app.get('io');
+    if (io) {
+      const sockets = await io.in(`user:${targetUser}`).fetchSockets();
+      for (const s of sockets) {
+        if (s.sessionId === sessionId) {
+          s.emit('force_logout', { username: targetUser, reason: 'remote_logout', sessionId });
+          s.disconnect();
+        }
+      }
+    }
+
+    res.json({ success: true, activeSessions: updatedSessions });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   getUser,
   updateUser,
   syncTags,
   togglePinRoom,
   toggle2FA,
-  updateE2EEKey
+  updateE2EEKey,
+  getActiveSessions,
+  terminateSession
 };
