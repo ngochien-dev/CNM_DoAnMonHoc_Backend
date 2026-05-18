@@ -308,6 +308,35 @@ const inviteToGroup = async (req, res) => {
   }
 };
 
+// Đổi ảnh đại diện nhóm
+const updateGroupAvatar = async (req, res) => {
+  try {
+    const { groupId, avatar } = req.body;
+    const callerUsername = req.auth.username;
+    
+    if (!avatar) return res.status(400).json({ error: "Ảnh đại diện không được để trống!" });
+
+    const data = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
+    if (!data.Item) return res.status(404).json({ error: "Group not found" });
+
+    const isOwner = data.Item.owner === callerUsername;
+    const isMod = (data.Item.mods || []).includes(callerUsername);
+    if (!isOwner && !isMod) return res.status(403).json({ error: "Bạn không có quyền đổi ảnh đại diện nhóm!" });
+
+    await docClient.send(new UpdateCommand({
+      TableName: 'Groups',
+      Key: { groupId },
+      UpdateExpression: "set avatar = :a",
+      ExpressionAttributeValues: { ":a": avatar }
+    }));
+
+    req.app.get('io').emit('groups_updated');
+    res.json({ success: true, avatar });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   getAllGroups,
   createGroup,
@@ -318,5 +347,6 @@ module.exports = {
   updateRole,
   renameGroup,
   transferOwnership,
-  inviteToGroup
+  inviteToGroup,
+  updateGroupAvatar
 };
