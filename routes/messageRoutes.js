@@ -36,5 +36,6 @@ router.post('/vote', messageController.votePoll);
 router.post('/attend-event', messageController.attendEvent);
 router.post('/react', messageController.reactToMessage);
 router.post('/mark-read', messageController.markAsRead);
+router.post('/report', messageController.reportMessage);
 
 module.exports = router;

@@ -150,9 +150,140 @@ const resetUserPassword = async (req, res) => {
   }
 };
 
+const getReports = async (req, res) => {
+  try {
+    if (req.auth && req.auth.role !== 'admin') {
+      return res.status(403).json({ error: "Access denied. Admin only." });
+    }
+
+    const data = await docClient.send(new ScanCommand({ TableName: 'Reports' }));
+    const reports = data.Items || [];
+    
+    // Sort reports by createdAt descending
+    reports.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json(reports);
+  } catch (err) {
+    console.error("getReports error:", err);
+    res.status(500).json(err);
+  }
+};
+
+const resolveReport = async (req, res) => {
+  try {
+    if (req.auth && req.auth.role !== 'admin') {
+      return res.status(403).json({ error: "Access denied. Admin only." });
+    }
+
+    const { reportId } = req.params;
+    const { action } = req.body; // 'dismiss', 'delete_message', 'ban_sender'
+    if (!reportId || !action) {
+      return res.status(400).json({ error: "Missing reportId or action" });
+    }
+
+    // Get report info
+    const reportData = await docClient.send(new GetCommand({ TableName: 'Reports', Key: { reportId } }));
+    if (!reportData.Item) {
+      return res.status(404).json({ error: "Report not found" });
+    }
+    const report = reportData.Item;
+    const { messageId, messageSender } = report;
+
+    if (action === 'dismiss') {
+      await docClient.send(new UpdateCommand({
+        TableName: 'Reports',
+        Key: { reportId },
+        UpdateExpression: "set #s = :status",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: { ":status": "resolved_dismissed" }
+      }));
+    } else if (action === 'delete_message') {
+      // 1. Mark message as revoked/deleted in Messages table
+      await docClient.send(new UpdateCommand({
+        TableName: 'Messages',
+        Key: { messageId },
+        UpdateExpression: 'set #t = :txt, isRevoked = :rev, fileData = :f, fileType = :ft',
+        ExpressionAttributeNames: { '#t': 'text' },
+        ExpressionAttributeValues: {
+          ':txt': 'Tin nhắn này đã bị ẩn bởi Admin do vi phạm tiêu chuẩn cộng đồng',
+          ':rev': true,
+          ':f': null,
+          ':ft': null
+        }
+      }));
+
+      // 2. Emit real-time revoke to all clients via Socket.io
+      if (req.app.get('io')) {
+        req.app.get('io').emit('message_revoked', messageId);
+      }
+
+      // 3. Update report status
+      await docClient.send(new UpdateCommand({
+        TableName: 'Reports',
+        Key: { reportId },
+        UpdateExpression: "set #s = :status",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: { ":status": "resolved_deleted" }
+      }));
+    } else if (action === 'ban_sender') {
+      // 1. Ban the user in Users table
+      if (messageSender && messageSender !== 'admin' && messageSender !== 'system') {
+        const userData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username: messageSender } }));
+        if (userData.Item && userData.Item.role !== 'admin') {
+          await docClient.send(new UpdateCommand({
+            TableName: 'Users',
+            Key: { username: messageSender },
+            UpdateExpression: "set isBanned = :b",
+            ExpressionAttributeValues: { ":b": true }
+          }));
+
+          // Force logout the banned sender instantly via socket
+          if (req.app.get('io')) {
+            req.app.get('io').emit('force_logout', { username: messageSender, reason: 'banned' });
+          }
+        }
+      }
+
+      // 2. Mark message as revoked/deleted in Messages table
+      await docClient.send(new UpdateCommand({
+        TableName: 'Messages',
+        Key: { messageId },
+        UpdateExpression: 'set #t = :txt, isRevoked = :rev, fileData = :f, fileType = :ft',
+        ExpressionAttributeNames: { '#t': 'text' },
+        ExpressionAttributeValues: {
+          ':txt': 'Tin nhắn này đã bị ẩn bởi Admin do vi phạm tiêu chuẩn cộng đồng',
+          ':rev': true,
+          ':f': null,
+          ':ft': null
+        }
+      }));
+
+      // Emit real-time revoke to all clients via Socket.io
+      if (req.app.get('io')) {
+        req.app.get('io').emit('message_revoked', messageId);
+      }
+
+      // 3. Update report status
+      await docClient.send(new UpdateCommand({
+        TableName: 'Reports',
+        Key: { reportId },
+        UpdateExpression: "set #s = :status",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: { ":status": "resolved_banned" }
+      }));
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("resolveReport error:", err);
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   getStats,
   getUsersList,
   toggleUserStatus,
-  resetUserPassword
+  resetUserPassword,
+  getReports,
+  resolveReport
 };

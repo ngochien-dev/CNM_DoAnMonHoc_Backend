@@ -1,6 +1,6 @@
 const messageService = require('../services/messageService');
 const docClient = require('../awsConfig');
-const { ScanCommand, GetCommand, UpdateCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
+const { ScanCommand, GetCommand, UpdateCommand, QueryCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
 
 // Simple search by content
 exports.searchByContent = async (req, res) => {
@@ -517,5 +517,42 @@ exports.getRoomMedia = async (req, res) => {
     } catch (err) {
         console.error("GetRoomMedia error:", err);
         res.status(500).json({ error: "Could not fetch room media" });
+    }
+};
+
+exports.reportMessage = async (req, res) => {
+    try {
+        const { messageId, reason } = req.body;
+        const reporterUsername = req.auth ? req.auth.username : (req.user ? req.user.username : 'user');
+        
+        if (!messageId || !reason) {
+            return res.status(400).json({ error: "Missing messageId or reason" });
+        }
+        
+        // Fetch message details
+        const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
+        if (!msgData.Item) {
+            return res.status(404).json({ error: "Message not found" });
+        }
+        
+        const reportId = Date.now().toString() + "_" + Math.random().toString(36).substr(2, 5);
+        const reportItem = {
+            reportId,
+            messageId,
+            messageSender: msgData.Item.senderUsername || msgData.Item.sender || "unknown",
+            messageText: msgData.Item.text || "[Tệp tin đính kèm]",
+            messageRoomId: msgData.Item.roomId || "chung",
+            reporterUsername: reporterUsername || "user",
+            reason,
+            status: "pending",
+            createdAt: new Date().toISOString()
+        };
+        
+        await docClient.send(new PutCommand({ TableName: 'Reports', Item: reportItem }));
+        
+        res.json({ success: true, report: reportItem });
+    } catch (err) {
+        console.error("Report message error:", err);
+        res.status(500).json({ error: "Could not report message" });
     }
 };

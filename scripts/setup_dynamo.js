@@ -27,6 +27,12 @@ const tables = [
         KeySchema: [{ AttributeName: "postId", KeyType: "HASH" }],
         AttributeDefinitions: [{ AttributeName: "postId", AttributeType: "S" }],
         ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+    },
+    {
+        TableName: "Reports",
+        KeySchema: [{ AttributeName: "reportId", KeyType: "HASH" }],
+        AttributeDefinitions: [{ AttributeName: "reportId", AttributeType: "S" }],
+        ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
     }
 ];
 
