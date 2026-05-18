@@ -112,8 +112,12 @@ exports.reactPost = async (req, res) => {
 
 exports.commentPost = async (req, res) => {
     try {
-        const { postId, username, text } = req.body;
-        if (!text || !text.trim()) return res.status(400).json({ error: "Comment text is required" });
+        const { postId, username, text, mediaData, stickerUrl } = req.body;
+        
+        let mediaUrl = "";
+        if (mediaData) {
+            mediaUrl = await s3Service.uploadBase64File(mediaData, `comment_${Date.now()}`, 'image');
+        }
 
         const postRes = await docClient.send(new QueryCommand({
             TableName: "Posts",
@@ -129,7 +133,11 @@ exports.commentPost = async (req, res) => {
         const newComment = {
             commentId: `c_${Date.now()}_${username}`,
             username,
-            text: text.trim(),
+            text: (text || "").trim(),
+            mediaUrl: mediaUrl || "",
+            stickerUrl: stickerUrl || "",
+            reactions: [],
+            replies: [],
             createdAt: new Date().toISOString()
         };
 
@@ -148,6 +156,7 @@ exports.commentPost = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+
 
 exports.deleteComment = async (req, res) => {
     try {
@@ -187,3 +196,199 @@ exports.deleteComment = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+
+exports.editComment = async (req, res) => {
+    try {
+        const { postId, commentId, text, username } = req.body;
+        
+        const postRes = await docClient.send(new QueryCommand({
+            TableName: "Posts",
+            KeyConditionExpression: "postId = :id",
+            ExpressionAttributeValues: { ":id": postId }
+        }));
+
+        if (!postRes.Items || postRes.Items.length === 0) return res.status(404).json({ error: "Post not found" });
+
+        const post = postRes.Items[0];
+        let comments = post.comments || [];
+
+        const commentIdx = comments.findIndex(c => c.commentId === commentId);
+        if (commentIdx === -1) return res.status(404).json({ error: "Comment not found" });
+
+        if (comments[commentIdx].username !== username) {
+            return res.status(403).json({ error: "Unauthorized to edit this comment" });
+        }
+
+        comments[commentIdx].text = text || "";
+        comments[commentIdx].isEdited = true;
+
+        await docClient.send(new UpdateCommand({
+            TableName: "Posts",
+            Key: { postId },
+            UpdateExpression: "SET comments = :c",
+            ExpressionAttributeValues: { ":c": comments }
+        }));
+
+        req.app.get('io').emit('posts_updated');
+        res.json({ success: true, comments });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
+exports.editPost = async (req, res) => {
+    try {
+        const { postId, text } = req.body;
+        const username = req.auth.username;
+
+        const postRes = await docClient.send(new QueryCommand({
+            TableName: "Posts",
+            KeyConditionExpression: "postId = :id",
+            ExpressionAttributeValues: { ":id": postId }
+        }));
+
+        if (!postRes.Items || postRes.Items.length === 0) return res.status(404).json({ error: "Post not found" });
+
+        const post = postRes.Items[0];
+        if (post.username !== username) {
+            return res.status(403).json({ error: "Unauthorized to edit this post" });
+        }
+
+        await docClient.send(new UpdateCommand({
+            TableName: "Posts",
+            Key: { postId },
+            UpdateExpression: "SET #t = :text, isEdited = :isEdited",
+            ExpressionAttributeNames: { "#t": "text" },
+            ExpressionAttributeValues: { ":text": text || "", ":isEdited": true }
+        }));
+
+        req.app.get('io').emit('posts_updated');
+        res.json({ success: true, text });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.deletePost = async (req, res) => {
+    try {
+        const { postId } = req.body;
+        const username = req.auth.username;
+        const role = req.auth.role || 'user';
+
+        const postRes = await docClient.send(new QueryCommand({
+            TableName: "Posts",
+            KeyConditionExpression: "postId = :id",
+            ExpressionAttributeValues: { ":id": postId }
+        }));
+
+        if (!postRes.Items || postRes.Items.length === 0) return res.status(404).json({ error: "Post not found" });
+
+        const post = postRes.Items[0];
+        if (post.username !== username && role !== 'admin') {
+            return res.status(403).json({ error: "Unauthorized to delete this post" });
+        }
+
+        await docClient.send(new DeleteCommand({
+            TableName: "Posts",
+            Key: { postId }
+        }));
+
+        req.app.get('io').emit('posts_updated');
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.reactComment = async (req, res) => {
+    try {
+        const { postId, commentId, username, emoji } = req.body;
+
+        const postRes = await docClient.send(new QueryCommand({
+            TableName: "Posts",
+            KeyConditionExpression: "postId = :id",
+            ExpressionAttributeValues: { ":id": postId }
+        }));
+
+        if (!postRes.Items || postRes.Items.length === 0) return res.status(404).json({ error: "Post not found" });
+
+        const post = postRes.Items[0];
+        let comments = post.comments || [];
+
+        const commentIdx = comments.findIndex(c => c.commentId === commentId);
+        if (commentIdx === -1) return res.status(404).json({ error: "Comment not found" });
+
+        let reactions = comments[commentIdx].reactions || [];
+        const existingIdx = reactions.findIndex(r => r.username === username);
+
+        if (existingIdx > -1) {
+            if (reactions[existingIdx].emoji === emoji) {
+                reactions.splice(existingIdx, 1);
+            } else {
+                reactions[existingIdx].emoji = emoji;
+            }
+        } else {
+            reactions.push({ username, emoji });
+        }
+
+        comments[commentIdx].reactions = reactions;
+
+        await docClient.send(new UpdateCommand({
+            TableName: "Posts",
+            Key: { postId },
+            UpdateExpression: "SET comments = :c",
+            ExpressionAttributeValues: { ":c": comments }
+        }));
+
+        req.app.get('io').emit('posts_updated');
+        res.json({ success: true, comments });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.replyComment = async (req, res) => {
+    try {
+        const { postId, commentId, username, text } = req.body;
+
+        const postRes = await docClient.send(new QueryCommand({
+            TableName: "Posts",
+            KeyConditionExpression: "postId = :id",
+            ExpressionAttributeValues: { ":id": postId }
+        }));
+
+        if (!postRes.Items || postRes.Items.length === 0) return res.status(404).json({ error: "Post not found" });
+
+        const post = postRes.Items[0];
+        let comments = post.comments || [];
+
+        const commentIdx = comments.findIndex(c => c.commentId === commentId);
+        if (commentIdx === -1) return res.status(404).json({ error: "Comment not found" });
+
+        let replies = comments[commentIdx].replies || [];
+        const newReply = {
+            replyId: `reply_${Date.now()}_${username}`,
+            username,
+            text: (text || "").trim(),
+            createdAt: new Date().toISOString()
+        };
+
+        replies.push(newReply);
+        comments[commentIdx].replies = replies;
+
+        await docClient.send(new UpdateCommand({
+            TableName: "Posts",
+            Key: { postId },
+            UpdateExpression: "SET comments = :c",
+            ExpressionAttributeValues: { ":c": comments }
+        }));
+
+        req.app.get('io').emit('posts_updated');
+        res.json({ success: true, comments });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
