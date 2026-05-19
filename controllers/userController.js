@@ -84,6 +84,32 @@ const togglePinRoom = async (req, res) => {
   }
 };
 
+const toggleArchiveRoom = async (req, res) => {
+  try {
+    const { username, roomId, action } = req.body; // action: 'archive' or 'unarchive'
+    const userData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username } }));
+    if (!userData.Item) return res.status(404).send("User not found");
+
+    let archivedRooms = userData.Item.archivedRooms || [];
+    if (action === 'archive' && !archivedRooms.includes(roomId)) {
+      archivedRooms.push(roomId);
+    } else if (action === 'unarchive') {
+      archivedRooms = archivedRooms.filter(id => id !== roomId);
+    }
+
+    await docClient.send(new UpdateCommand({
+      TableName: 'Users',
+      Key: { username },
+      UpdateExpression: "set archivedRooms = :p",
+      ExpressionAttributeValues: { ":p": archivedRooms }
+    }));
+
+    res.json({ success: true, archivedRooms });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 const toggle2FA = async (req, res) => {
   try {
     const { username, enabled } = req.body;
@@ -215,6 +241,7 @@ module.exports = {
   updateUser,
   syncTags,
   togglePinRoom,
+  toggleArchiveRoom,
   toggle2FA,
   updateE2EEKey,
   getActiveSessions,
