@@ -4,6 +4,7 @@ const userController = require('../controllers/userController');
 
 router.get('/active-sessions', userController.getActiveSessions);
 router.post('/terminate-session', userController.terminateSession);
+router.get('/suggestions/list', userController.getSuggestions);
 router.get('/:username', userController.getUser);
 router.post('/update', userController.updateUser);
 router.post('/sync-tags', userController.syncTags);

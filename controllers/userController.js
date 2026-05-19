@@ -236,6 +236,48 @@ const updateScore = async (req, res) => {
   }
 };
 
+const getSuggestions = async (req, res) => {
+  try {
+    const { username } = req.query;
+    if (!username) return res.status(400).send("Username is required");
+
+    const userData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username } }));
+    if (!userData.Item) return res.status(404).send("User not found");
+
+    const friends = userData.Item.friends || [];
+    const friendRequests = userData.Item.friendRequests || [];
+    const sentRequests = userData.Item.sentRequests || [];
+    const blockedUsers = userData.Item.blockedUsers || [];
+
+    const allUsersData = await docClient.send(new ScanCommand({ TableName: 'Users' }));
+    const allUsers = allUsersData.Items || [];
+
+    const suggestions = allUsers.filter(u => {
+      if (u.username === username) return false;
+      const uFriends = u.friends || [];
+      const uBlocked = u.blockedUsers || [];
+      if (friends.includes(u.username)) return false;
+      if (friendRequests.includes(u.username)) return false;
+      if (sentRequests.includes(u.username)) return false;
+      if (blockedUsers.includes(u.username)) return false;
+      if (uBlocked.includes(username)) return false;
+      return true;
+    });
+
+    const shuffled = suggestions.sort(() => 0.5 - Math.random());
+    const selected = shuffled.slice(0, 5).map(u => ({
+      username: u.username,
+      displayName: u.displayName || u.username,
+      avatar: u.avatar
+    }));
+
+    res.json(selected);
+  } catch (err) {
+    console.error("Suggestions error:", err);
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   getUser,
   updateUser,
@@ -247,5 +289,7 @@ module.exports = {
   getActiveSessions,
   terminateSession,
   getLeaderboard,
-  updateScore
+  updateScore,
+  getSuggestions
 };
+

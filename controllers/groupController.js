@@ -12,8 +12,12 @@ const getAllGroups = async (req, res) => {
 
 const createGroup = async (req, res) => {
   try {
-    const { groupName, owner, isPublic, isChannel } = req.body;
+    const { groupName, owner, isPublic, isChannel, members } = req.body;
     const groupId = "group_" + Date.now();
+
+    const initialMembers = members && Array.isArray(members) 
+      ? [...new Set([owner, ...members])] 
+      : (isPublic ? [] : [owner]);
 
     const item = {
       groupId,
@@ -22,7 +26,7 @@ const createGroup = async (req, res) => {
       isPublic: isPublic || false,
       isChannel: isChannel || false,
       isDisabled: false,
-      members: isPublic ? [] : [owner],
+      members: initialMembers,
       pendingRequests: [],
       mods: [], // Thêm mảng chứa MOD
       createdAt: new Date().toISOString()
