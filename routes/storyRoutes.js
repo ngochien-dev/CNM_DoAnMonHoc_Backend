@@ -6,6 +6,7 @@ const { requireAuth } = require('../middlewares/authMiddleware');
 router.post('/upload', requireAuth, storyController.uploadStory);
 router.get('/list', requireAuth, storyController.getStories);
 router.post('/react', requireAuth, storyController.reactStory);
+router.post('/view', requireAuth, storyController.viewStory);
 router.post('/delete', requireAuth, storyController.deleteStory);
 router.get('/archive', requireAuth, storyController.getArchive);
 

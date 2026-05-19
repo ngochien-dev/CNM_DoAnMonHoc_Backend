@@ -4,7 +4,7 @@ const s3Service = require("../services/s3Service");
 
 exports.createPost = async (req, res) => {
     try {
-        const { text, mediaData, username } = req.body;
+        const { text, mediaData, username, privacy } = req.body;
         let mediaUrl = "";
         
         if (mediaData) {
@@ -17,6 +17,7 @@ exports.createPost = async (req, res) => {
             username,
             text: text || "",
             mediaUrl,
+            privacy: privacy || "friends", // 'public' | 'friends' | 'private'
             likes: [], // Backward compatibility
             reactions: [], // Array of { username, emoji }
             comments: [], // Array of { commentId, username, text, createdAt }
@@ -46,9 +47,21 @@ exports.getPosts = async (req, res) => {
             TableName: "Posts"
         }));
 
-        // Filter for friends and self
         const filtered = (result.Items || []).filter(p => {
-            return friendList.includes(p.username) || p.username === req.auth.username;
+            const author = p.username;
+            const isMe = author === req.auth.username;
+            
+            if (isMe) return true;
+            
+            const privacy = p.privacy || 'friends';
+            const isFriend = friendList.includes(author);
+            
+            if (isFriend) {
+                return privacy === 'public' || privacy === 'friends';
+            }
+            
+            // Non-friends can only see public posts
+            return privacy === 'public';
         });
 
         // Ensure fields are defined

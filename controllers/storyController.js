@@ -23,7 +23,8 @@ exports.uploadStory = async (req, res) => {
             createdAt: new Date().toISOString(),
             expiresAt,
             ttl: Math.floor(expiresAt / 1000), // DynamoDB TTL
-            reactions: []
+            reactions: [],
+            viewers: []
         };
 
         await docClient.send(new PutCommand({
@@ -82,6 +83,12 @@ exports.getStories = async (req, res) => {
             return s.expiresAt > now && (isFriend || isMe);
         });
 
+        // Ensure viewers and reactions are always arrays
+        activeStories.forEach(s => {
+            if (!s.viewers) s.viewers = [];
+            if (!s.reactions) s.reactions = [];
+        });
+
         const grouped = activeStories.reduce((acc, s) => {
             if (!acc[s.username]) acc[s.username] = [];
             acc[s.username].push(s);
@@ -110,6 +117,46 @@ exports.reactStory = async (req, res) => {
         req.app.get('io').emit('stories_updated');
         res.json({ success: true });
     } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.viewStory = async (req, res) => {
+    try {
+        const { storyId } = req.body;
+        const viewerUsername = req.auth.username;
+
+        const storyRes = await docClient.send(new QueryCommand({
+            TableName: "Stories",
+            KeyConditionExpression: "storyId = :id",
+            ExpressionAttributeValues: { ":id": storyId }
+        }));
+
+        if (!storyRes.Items || storyRes.Items.length === 0) {
+            return res.status(404).json({ error: "Story not found" });
+        }
+
+        const story = storyRes.Items[0];
+        let viewers = story.viewers || [];
+
+        // If the viewer is the owner, or already viewed, do nothing but return success
+        if (story.username === viewerUsername || viewers.includes(viewerUsername)) {
+            return res.json({ success: true, viewers });
+        }
+
+        viewers.push(viewerUsername);
+
+        await docClient.send(new UpdateCommand({
+            TableName: "Stories",
+            Key: { storyId },
+            UpdateExpression: "SET viewers = :v",
+            ExpressionAttributeValues: { ":v": viewers }
+        }));
+
+        req.app.get('io').emit('stories_updated');
+        res.json({ success: true, viewers });
+    } catch (error) {
+        console.error("View story error:", error);
         res.status(500).json({ error: error.message });
     }
 };
