@@ -76,6 +76,23 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
                 );
             }
 
+            // Kiểm tra nếu phòng là Kênh truyền thông (isChannel) và phân quyền gửi tin nhắn
+            if (payload.roomId && payload.roomId.startsWith('group_')) {
+                const { GetCommand } = require("@aws-sdk/lib-dynamodb");
+                const groupData = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId: payload.roomId } }));
+                if (groupData.Item && groupData.Item.isChannel) {
+                    const isAuthorized = 
+                        groupData.Item.owner === socket.user.username || 
+                        socket.user.role === 'admin' ||
+                        (groupData.Item.mods && groupData.Item.mods.includes(socket.user.username));
+                    
+                    if (!isAuthorized) {
+                        socket.emit('error_message', { error: 'Chỉ Admin hoặc Chủ kênh mới được đăng bài trong kênh truyền thông!' });
+                        return;
+                    }
+                }
+            }
+
             const presenceProfile = presenceStore.getProfile(socket.user.username) || socket.user;
             const item = {
                 messageId: Date.now().toString(),
