@@ -169,11 +169,13 @@ const terminateSession = async (req, res) => {
 
 const getLeaderboard = async (req, res) => {
   try {
+    const { gameId = 'snake' } = req.query; // snake or flappy
+    const scoreField = `score_${gameId}`;
     const data = await docClient.send(new ScanCommand({ TableName: 'Users' }));
     let users = data.Items || [];
-    users = users.filter(u => u.highScore > 0);
-    users.sort((a, b) => b.highScore - a.highScore);
-    const top10 = users.slice(0, 10).map(u => ({ username: u.username, displayName: u.displayName, highScore: u.highScore, avatar: u.avatar }));
+    users = users.filter(u => u[scoreField] > 0);
+    users.sort((a, b) => b[scoreField] - a[scoreField]);
+    const top10 = users.slice(0, 10).map(u => ({ username: u.username, displayName: u.displayName, score: u[scoreField], avatar: u.avatar }));
     res.json(top10);
   } catch (err) {
     res.status(500).json(err);
@@ -182,22 +184,23 @@ const getLeaderboard = async (req, res) => {
 
 const updateScore = async (req, res) => {
   try {
-    const { username, score } = req.body;
+    const { username, score, gameId = 'snake' } = req.body;
     if (!username || score == null) return res.status(400).send("Invalid input");
 
+    const scoreField = `score_${gameId}`;
     const userData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username } }));
     if (!userData.Item) return res.status(404).send("User not found");
 
-    const currentHigh = userData.Item.highScore || 0;
+    const currentHigh = userData.Item[scoreField] || 0;
     if (score > currentHigh) {
       await docClient.send(new UpdateCommand({
         TableName: 'Users',
         Key: { username },
-        UpdateExpression: "set highScore = :s",
+        UpdateExpression: `set ${scoreField} = :s`,
         ExpressionAttributeValues: { ":s": score }
       }));
       const io = req.app.get('io');
-      if (io) io.emit('leaderboard_updated');
+      if (io) io.emit('leaderboard_updated', { gameId });
       return res.json({ success: true, isNewHigh: true, newHighScore: score });
     }
     
