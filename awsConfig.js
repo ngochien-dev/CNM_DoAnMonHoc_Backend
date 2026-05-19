@@ -1,10 +1,9 @@
-const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient } = require('@aws-sdk/lib-dynamodb');
-
-require('dotenv').config();
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const { DynamoDBDocumentClient } = require("@aws-sdk/lib-dynamodb");
+require("dotenv").config();
 
 const clientConfig = {
-    region: process.env.AWS_REGION || 'ap-southeast-2',
+    region: process.env.AWS_REGION || "ap-southeast-1",
 };
 
 if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
