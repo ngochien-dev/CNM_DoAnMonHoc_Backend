@@ -12,7 +12,7 @@ const getAllGroups = async (req, res) => {
 
 const createGroup = async (req, res) => {
   try {
-    const { groupName, owner, isPublic, isChannel, members } = req.body;
+    const { groupName, owner, isPublic, isChannel, members, description } = req.body;
     const groupId = "group_" + Date.now();
 
     const initialMembers = members && Array.isArray(members) 
@@ -22,6 +22,7 @@ const createGroup = async (req, res) => {
     const item = {
       groupId,
       groupName,
+      description: description || "",
       owner,
       isPublic: isPublic || false,
       isChannel: isChannel || false,
