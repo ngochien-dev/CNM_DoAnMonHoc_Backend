@@ -10,5 +10,7 @@ router.post('/sync-tags', userController.syncTags);
 router.post('/toggle-pin', userController.togglePinRoom);
 router.post('/toggle-2fa', userController.toggle2FA);
 router.post('/update-e2ee-key', userController.updateE2EEKey);
+router.get('/leaderboard/top', userController.getLeaderboard);
+router.post('/update-score', userController.updateScore);
 
 module.exports = router;
