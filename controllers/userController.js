@@ -1,5 +1,5 @@
 const docClient = require('../awsConfig');
-const { GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const { GetCommand, UpdateCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
 
 const getUser = async (req, res) => {
   try {
@@ -167,6 +167,46 @@ const terminateSession = async (req, res) => {
   }
 };
 
+const getLeaderboard = async (req, res) => {
+  try {
+    const data = await docClient.send(new ScanCommand({ TableName: 'Users' }));
+    let users = data.Items || [];
+    users = users.filter(u => u.highScore > 0);
+    users.sort((a, b) => b.highScore - a.highScore);
+    const top10 = users.slice(0, 10).map(u => ({ username: u.username, displayName: u.displayName, highScore: u.highScore, avatar: u.avatar }));
+    res.json(top10);
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
+const updateScore = async (req, res) => {
+  try {
+    const { username, score } = req.body;
+    if (!username || score == null) return res.status(400).send("Invalid input");
+
+    const userData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username } }));
+    if (!userData.Item) return res.status(404).send("User not found");
+
+    const currentHigh = userData.Item.highScore || 0;
+    if (score > currentHigh) {
+      await docClient.send(new UpdateCommand({
+        TableName: 'Users',
+        Key: { username },
+        UpdateExpression: "set highScore = :s",
+        ExpressionAttributeValues: { ":s": score }
+      }));
+      const io = req.app.get('io');
+      if (io) io.emit('leaderboard_updated');
+      return res.json({ success: true, isNewHigh: true, newHighScore: score });
+    }
+    
+    res.json({ success: true, isNewHigh: false, currentHighScore: currentHigh });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   getUser,
   updateUser,
@@ -175,5 +215,7 @@ module.exports = {
   toggle2FA,
   updateE2EEKey,
   getActiveSessions,
-  terminateSession
+  terminateSession,
+  getLeaderboard,
+  updateScore
 };
