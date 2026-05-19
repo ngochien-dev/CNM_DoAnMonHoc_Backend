@@ -1,5 +1,6 @@
 const presenceStore = require('../store/presenceStore');
 const { sanitizeSocketPayload, sanitizeString } = require('../middlewares/sanitize');
+const CALL_DEBUG_ENABLED = process.env.CALL_DEBUG !== 'false';
 
 // P0: Constants for validation
 const MAX_TEXT_LENGTH = 5000;
@@ -7,6 +8,11 @@ const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
 
 function emitOnlineUsers(io) {
     io.emit('update_user_list', presenceStore.getOnlineUsers());
+}
+
+function debugSocket(eventName, data = {}) {
+    if (!CALL_DEBUG_ENABLED) return;
+    console.log('[SOCKET]', eventName, data);
 }
 
 function buildSafePresenceProfile(socket, payload = {}) {
@@ -23,6 +29,14 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
         const safeProfile = buildSafePresenceProfile(socket, payload);
         socket.user = { ...socket.user, ...safeProfile };
         presenceStore.updateProfile(socket.user.username, safeProfile);
+        debugSocket('user_online profile registered.', {
+            username: socket.user.username,
+            socketId: socket.id,
+            connectionCount: presenceStore.getConnectionCount(socket.user.username),
+            onlineBy: 'username',
+            onlineUsersSize: presenceStore.getOnlineCount(),
+            onlineUsernames: presenceStore.getOnlineUsernames(),
+        });
         emitOnlineUsers(io);
     });
 
@@ -253,8 +267,17 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
         io.emit('secret_chat_closed', { roomId, sender: socket.user.username });
     });
 
-    socket.on('disconnect', () => {
-        presenceStore.removeConnection(socket.id);
+    socket.on('disconnect', (reason) => {
+        const removal = presenceStore.removeConnection(socket.id);
+        debugSocket('User socket disconnected and presence updated.', {
+            username: removal?.username || socket.user.username,
+            socketId: socket.id,
+            reason,
+            stillOnline: Boolean(removal?.stillOnline),
+            connectionCount: presenceStore.getConnectionCount(socket.user.username),
+            onlineUsersSize: presenceStore.getOnlineCount(),
+            onlineUsernames: presenceStore.getOnlineUsernames(),
+        });
         emitOnlineUsers(io);
     });
 };

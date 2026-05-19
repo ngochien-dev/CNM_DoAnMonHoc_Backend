@@ -1,10 +1,23 @@
 // backend/controllers/authController.js
 
+require('dotenv').config();
 const User = require('../models/userModel');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const AWS = require('aws-sdk');
+const awsConfig = {
+    region: process.env.AWS_REGION || 'ap-southeast-1',
+};
+
+if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+    awsConfig.credentials = {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    };
+}
+
+AWS.config.update(awsConfig);
 const docClient = new AWS.DynamoDB.DocumentClient();
 
 const transporter = nodemailer.createTransport({
@@ -34,7 +47,19 @@ exports.register = async (req, res) => {
             html: `<h3>Chào ${displayName}!</h3><p>Mã OTP của bạn là: <b>${otp}</b></p>`
         });
         res.status(200).json({ message: "OTP đã gửi!" });
-    } catch (err) { res.status(500).json({ message: err.message }); }
+    } catch (err) {
+        console.error('Register API error:', {
+            name: err.name,
+            message: err.message,
+            code: err.code,
+            statusCode: err.$metadata?.httpStatusCode || err.statusCode,
+            requestId: err.$metadata?.requestId || err.requestId,
+            region: process.env.AWS_REGION || 'ap-southeast-1',
+            tableName: 'Users',
+            stack: err.stack,
+        });
+        res.status(500).json({ message: err.message });
+    }
 };
 
 // 2. Xác thực OTP đăng ký
