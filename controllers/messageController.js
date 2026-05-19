@@ -176,8 +176,12 @@ exports.getMessages = async (req, res) => {
         allItems = allItems.filter(m => new Date(m.createdAt) < new Date(before));
       }
 
-      // Take only 'pageSize' messages, then reverse to chronological order
-      const page = allItems.slice(0, pageSize).reverse();
+      // Take only 'pageSize' messages, map fields, then reverse to chronological order
+      const page = allItems.slice(0, pageSize).map(m => ({
+        ...m,
+        readBy: m.readBy || [],
+        deliveredTo: m.deliveredTo || []
+      })).reverse();
       const hasMore = allItems.length > pageSize;
 
       return res.json({
@@ -226,7 +230,13 @@ exports.getMessages = async (req, res) => {
       return false;
     });
 
-    res.json(allItems.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)));
+    const processed = allItems.map(m => ({
+      ...m,
+      readBy: m.readBy || [],
+      deliveredTo: m.deliveredTo || []
+    })).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+    res.json(processed);
   } catch (err) {
     res.status(500).json(err);
   }

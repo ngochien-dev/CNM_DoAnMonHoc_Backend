@@ -72,6 +72,7 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
                 roomId: payload.roomId || 'chung',
                 isRevoked: false,
                 readBy: [socket.user.username], // P0: Sender has already "read" their own message
+                deliveredTo: [socket.user.username], // Initialize deliveredTo with the sender
                 createdAt: new Date().toISOString(),
             };
 
@@ -179,6 +180,47 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
             // Broadcast read receipt to all users in the room
             io.emit('messages_read_update', {
                 reader: username,
+                roomId,
+                updates: updatedIds,
+            });
+        }
+    });
+
+    // P0: Delivery Receipts via Socket — lightweight real-time delivery notifications
+    socket.on('messages_delivered', async ({ messageIds, roomId }) => {
+        if (!messageIds || !Array.isArray(messageIds) || messageIds.length === 0) return;
+        
+        const username = socket.user.username;
+        const idsToProcess = messageIds.slice(0, 50); // Limit batch size to 50
+
+        const { GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+        
+        const updatedIds = [];
+        for (const messageId of idsToProcess) {
+            try {
+                const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
+                if (!msgData.Item) continue;
+                
+                let deliveredTo = msgData.Item.deliveredTo || [];
+                if (deliveredTo.includes(username)) continue; // Already marked as delivered
+                
+                deliveredTo.push(username);
+                await docClient.send(new UpdateCommand({
+                    TableName: 'Messages',
+                    Key: { messageId },
+                    UpdateExpression: "set deliveredTo = :d",
+                    ExpressionAttributeValues: { ":d": deliveredTo }
+                }));
+                updatedIds.push({ messageId, deliveredTo });
+            } catch (e) {
+                // Skip individual failures silently
+            }
+        }
+
+        if (updatedIds.length > 0) {
+            // Broadcast delivery receipt to all users in the room
+            io.emit('messages_delivered_bulk_update', {
+                deliveree: username,
                 roomId,
                 updates: updatedIds,
             });
