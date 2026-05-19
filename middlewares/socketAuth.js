@@ -24,6 +24,7 @@ module.exports = async function socketAuth(socket, next) {
             role: user.role,
             avatar: user.avatar || null,
         };
+        socket.sessionId = socket.handshake.auth?.sessionId || null;
 
         next();
     } catch (error) {

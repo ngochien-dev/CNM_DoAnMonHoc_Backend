@@ -27,6 +27,7 @@ function registerConnection(user, socketId) {
     userConnections.set(username, existingSockets);
     socketToUser.set(socketId, username);
     userProfiles.set(username, normalizeProfile(user));
+    lastSeenMap.delete(username);
 
     debugPresence('presence.registerConnection', {
         username,
@@ -137,6 +138,7 @@ function getOnlineUsernames() {
 }
 
 function getLastSeen(username) {
+    if (isOnline(username)) return null;
     return lastSeenMap.get(username) || null;
 }
 

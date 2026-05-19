@@ -43,24 +43,71 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
     socket.on('admin_update_group', () => io.emit('groups_updated'));
     socket.on('request_join_group', () => io.emit('groups_updated'));
 
-    socket.on('send_message', async (payload = {}) => {
-        const presenceProfile = presenceStore.getProfile(socket.user.username) || socket.user;
-        const item = {
-            messageId: Date.now().toString(),
-            ...payload,
-            sender: payload.sender || presenceProfile.displayName || socket.user.username,
-            senderUsername: socket.user.username,
-            roomId: payload.roomId || 'chung',
-            isRevoked: false,
-            createdAt: new Date().toISOString(),
-        };
+    const s3Service = require('../services/s3Service');
 
-        await docClient.put({ TableName: 'Messages', Item: item }).promise();
-        io.emit('receive_message', item);
+    socket.on('send_message', async (rawPayload = {}) => {
+        try {
+            // P0: Sanitize text input (skip fileData)
+            const payload = sanitizeSocketPayload(rawPayload);
+            
+            // P0: Validate text length
+            if (payload.text && payload.text.length > MAX_TEXT_LENGTH) {
+                payload.text = payload.text.substring(0, MAX_TEXT_LENGTH);
+            }
+
+            // P0: Validate file size (base64 string length ≈ 1.37x actual file size)
+            if (payload.fileData && typeof payload.fileData === 'string') {
+                const estimatedSize = (payload.fileData.length * 3) / 4;
+                if (estimatedSize > MAX_FILE_SIZE_BYTES) {
+                    socket.emit('error_message', { error: 'File quá lớn! Giới hạn 5MB.' });
+                    return;
+                }
+            }
+
+            let finalFileData = payload.fileData;
+            
+            // Nếu có file và đang ở định dạng base64 (data URI)
+            if (finalFileData && finalFileData.startsWith('data:')) {
+                // Upload lên S3 và lấy URL thay thế
+                finalFileData = await s3Service.uploadBase64File(
+                    finalFileData, 
+                    payload.fileName || 'file', 
+                    payload.fileType
+                );
+            }
+
+            const presenceProfile = presenceStore.getProfile(socket.user.username) || socket.user;
+            const item = {
+                messageId: Date.now().toString(),
+                ...payload,
+                fileData: finalFileData, // Sử dụng S3 URL thay vì base64
+                sender: payload.sender || presenceProfile.displayName || socket.user.username,
+                senderUsername: socket.user.username,
+                roomId: payload.roomId || 'chung',
+                isRevoked: false,
+                readBy: [socket.user.username], // P0: Sender has already "read" their own message
+                deliveredTo: [socket.user.username], // Initialize deliveredTo with the sender
+                createdAt: new Date().toISOString(),
+            };
+
+            if (!payload.isSecret) {
+                const { PutCommand } = require("@aws-sdk/lib-dynamodb");
+                await docClient.send(new PutCommand({ TableName: 'Messages', Item: item }));
+            }
+            io.emit('receive_message', item);
+        } catch (error) {
+            console.error("Lỗi khi gửi tin nhắn/upload file:", error);
+        }
     });
 
     socket.on('revoke_message', async (messageId) => {
-        await docClient.update({
+        const { GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+        // Verify ownership: only sender or admin can revoke
+        const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
+        if (!msgData.Item) return;
+        if (msgData.Item.senderUsername !== socket.user.username && socket.user.role !== 'admin') return;
+
+        await docClient.send(new UpdateCommand({
             TableName: 'Messages',
             Key: { messageId },
             UpdateExpression: 'set #t = :txt, isRevoked = :rev, fileData = :f, fileType = :ft',
@@ -71,27 +118,26 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
                 ':f': null,
                 ':ft': null,
             },
-        }).promise();
+        }));
 
         io.emit('message_revoked', messageId);
     });
 
     socket.on('edit_message', async ({ messageId, newText, iv }) => {
         if (!messageId || !newText?.trim()) return;
-
+        
         // P0: Sanitize edited text
         const safeText = sanitizeString(newText.trim());
         if (safeText.length > MAX_TEXT_LENGTH) return;
 
         const { GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
-
         // Verify ownership: only sender can edit
         const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
         if (!msgData.Item) return;
         if (msgData.Item.senderUsername !== socket.user.username) return;
         if (msgData.Item.isRevoked) return; // Can't edit revoked messages
 
-        const updateExpression = iv
+        const updateExpression = iv 
             ? 'set #t = :txt, iv = :iv, isEdited = :ed, editedAt = :ea'
             : 'set #t = :txt, isEdited = :ed, editedAt = :ea';
 
@@ -110,33 +156,27 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
             ExpressionAttributeValues: expressionAttributeValues,
         }));
 
-        io.emit('message_edited', {
-            messageId,
-            newText: safeText,
-            iv,
-            isEdited: true,
-            editedAt: new Date().toISOString()
-        });
+        io.emit('message_edited', { messageId, newText: safeText, iv, isEdited: true, editedAt: new Date().toISOString() });
     });
 
     // P0: Read Receipts via Socket — lightweight real-time read notifications
     socket.on('message_read', async ({ messageIds, roomId }) => {
         if (!messageIds || !Array.isArray(messageIds) || messageIds.length === 0) return;
-
+        
         const username = socket.user.username;
         const idsToProcess = messageIds.slice(0, 20); // Limit batch size
 
         const { GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
-
+        
         const updatedIds = [];
         for (const messageId of idsToProcess) {
             try {
                 const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
                 if (!msgData.Item) continue;
-
+                
                 let readBy = msgData.Item.readBy || [];
                 if (readBy.includes(username)) continue; // Already read
-
+                
                 readBy.push(username);
                 await docClient.send(new UpdateCommand({
                     TableName: 'Messages',
@@ -151,6 +191,7 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
         }
 
         if (updatedIds.length > 0) {
+            // Broadcast read receipt to all users in the room
             io.emit('messages_read_update', {
                 reader: username,
                 roomId,
@@ -159,7 +200,50 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
         }
     });
 
+    // P0: Delivery Receipts via Socket — lightweight real-time delivery notifications
+    socket.on('messages_delivered', async ({ messageIds, roomId }) => {
+        if (!messageIds || !Array.isArray(messageIds) || messageIds.length === 0) return;
+        
+        const username = socket.user.username;
+        const idsToProcess = messageIds.slice(0, 50); // Limit batch size to 50
+
+        const { GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+        
+        const updatedIds = [];
+        for (const messageId of idsToProcess) {
+            try {
+                const msgData = await docClient.send(new GetCommand({ TableName: 'Messages', Key: { messageId } }));
+                if (!msgData.Item) continue;
+                
+                let deliveredTo = msgData.Item.deliveredTo || [];
+                if (deliveredTo.includes(username)) continue; // Already marked as delivered
+                
+                deliveredTo.push(username);
+                await docClient.send(new UpdateCommand({
+                    TableName: 'Messages',
+                    Key: { messageId },
+                    UpdateExpression: "set deliveredTo = :d",
+                    ExpressionAttributeValues: { ":d": deliveredTo }
+                }));
+                updatedIds.push({ messageId, deliveredTo });
+            } catch (e) {
+                // Skip individual failures silently
+            }
+        }
+
+        if (updatedIds.length > 0) {
+            // Broadcast delivery receipt to all users in the room
+            io.emit('messages_delivered_bulk_update', {
+                deliveree: username,
+                roomId,
+                updates: updatedIds,
+            });
+        }
+    });
+
     socket.on('typing_start', (payload) => {
+        // payload: { roomId: string, senderUsername: string }
+        // Phát sự kiện cho tất cả mọi người (trừ người gửi)
         socket.broadcast.emit('user_typing_start', payload);
     });
 

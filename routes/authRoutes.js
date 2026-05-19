@@ -9,5 +9,6 @@ router.post('/verify', authController.verify);
 router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
 router.post('/change-password', authController.changePassword);
+router.post('/verify-2fa', authController.verify2FA);
 
 module.exports = router;

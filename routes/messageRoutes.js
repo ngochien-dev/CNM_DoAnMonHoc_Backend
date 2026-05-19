@@ -26,4 +26,16 @@ router.get('/search/edited', messageController.searchEditedMessages);
 // Search pinned messages (đã ghim)
 router.get('/search/pinned', messageController.searchPinnedMessages);
 
+// Basic messaging operations
+router.get('/room/:roomId/media', messageController.getRoomMedia);
+router.get('/:username', messageController.getMessages);
+router.post('/delete-for-me', messageController.deleteForMe);
+router.post('/clear-history', messageController.clearHistory);
+router.post('/pin', messageController.pinMessage);
+router.post('/vote', messageController.votePoll);
+router.post('/attend-event', messageController.attendEvent);
+router.post('/react', messageController.reactToMessage);
+router.post('/mark-read', messageController.markAsRead);
+router.post('/report', messageController.reportMessage);
+
 module.exports = router;

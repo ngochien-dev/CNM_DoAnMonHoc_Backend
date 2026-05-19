@@ -11,7 +11,7 @@ function extractBearerToken(headerValue = '') {
 async function loadVerifiedUser(username) {
     if (!username) return null;
     const user = await User.findByUsername(username);
-    if (!user || !user.isVerified) return null;
+    if (!user || !user.isVerified || user.isBanned) return null;
     return user;
 }
 
@@ -27,6 +27,15 @@ async function requireAuth(req, res, next) {
 
         if (!user) {
             return res.status(401).json({ message: 'Token không hợp lệ hoặc tài khoản không tồn tại.' });
+        }
+
+        // Validate session ID if provided
+        const clientSessionId = req.headers['x-session-id'];
+        if (clientSessionId && user.activeSessions) {
+            const hasSession = user.activeSessions.some(s => s.sessionId === clientSessionId);
+            if (!hasSession) {
+                return res.status(401).json({ message: 'Phiên hoạt động này đã bị đăng xuất hoặc không hợp lệ.' });
+            }
         }
 
         req.auth = {

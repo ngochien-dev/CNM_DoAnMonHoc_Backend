@@ -2,360 +2,107 @@ const express = require('express');
 const cors = require('cors');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
-const AWS = require('aws-sdk');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
+const { requireAuth } = require('./middlewares/authMiddleware');
+const { sanitizeMiddleware } = require('./middlewares/sanitize');
 const authRoutes = require('./routes/authRoutes');
+const chatbotRoutes = require('./routes/chatbotRoutes');
+const messageRoutes = require('./routes/messageRoutes');
+const userRoutes = require('./routes/userRoutes');
 const callRoutes = require('./routes/callRoutes');
-const socketAuth = require('./middlewares/socketAuth');
-const presenceStore = require('./store/presenceStore');
-const registerChatSocket = require('./socket/chatSocket');
-const registerCallSocket = require('./socket/callSocket');
+const adminRoutes = require('./routes/adminRoutes');
+const groupRoutes = require('./routes/groupRoutes');
+const friendRoutes = require('./routes/friendRoutes');
+const searchRoutes = require('./routes/searchRoutes');
+const utilsRoutes = require('./routes/utilsRoutes');
+const storyRoutes = require('./routes/storyRoutes');
+const postRoutes = require('./routes/postRoutes');
+
+const configureSockets = require('./socket');
 
 const app = express();
 const httpServer = createServer(app);
 
 function parseOriginList(rawValue = '') {
-    return String(rawValue || '')
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean);
+  return String(rawValue || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function isAllowedDevOrigin(origin = '') {
-    return /^https?:\/\/((localhost|127\.0\.0\.1)|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(:\d+)?$/i.test(
-        origin,
-    );
+  return /^https?:\/\/((localhost|127\.0\.0\.1)|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(:\d+)?$/i.test(
+    origin,
+  );
 }
 
 const HOST = process.env.HOST || '0.0.0.0';
-const FRONTEND_ORIGINS = parseOriginList(process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN);
 const PORT = Number(process.env.PORT) || 3001;
+const FRONTEND_ORIGINS = parseOriginList(process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN);
 
 function corsOrigin(origin, callback) {
-    if (!origin || FRONTEND_ORIGINS.includes(origin) || isAllowedDevOrigin(origin)) {
-        callback(null, true);
-        return;
-    }
+  if (!origin || FRONTEND_ORIGINS.includes(origin) || isAllowedDevOrigin(origin)) {
+    callback(null, true);
+    return;
+  }
 
-    callback(new Error(`Origin ${origin} is not allowed by CORS.`));
+  callback(new Error(`Origin ${origin} is not allowed by CORS.`));
 }
 
 const corsOptions = {
-    origin: corsOrigin,
-    methods: ['GET', 'POST'],
-    credentials: true,
+  origin: corsOrigin,
+  methods: ['GET', 'POST'],
+  credentials: true,
 };
 
 const io = new Server(httpServer, {
-    cors: corsOptions,
+  cors: corsOptions,
 });
+app.set('io', io);
 
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 
-AWS.config.update({
-    region: process.env.AWS_REGION || 'ap-southeast-2',
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+// P0: Input sanitization - clean all incoming data (XSS protection)
+app.use(sanitizeMiddleware);
+
+// P0: Rate limiting - prevent brute-force and spam
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { message: 'Qua nhieu yeu cau, vui long thu lai sau 15 phut.' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
-const docClient = new AWS.DynamoDB.DocumentClient();
-
-app.get('/api/admin/stats', async (req, res) => {
-    try {
-        const users = await docClient.scan({ TableName: 'Users' }).promise();
-        const messages = await docClient.scan({ TableName: 'Messages' }).promise();
-        const groups = await docClient.scan({ TableName: 'Groups' }).promise();
-
-        const groupDict = { chung: 'Kenh Chung' };
-        groups.Items.forEach((group) => {
-            groupDict[group.groupId] = group.groupName;
-        });
-
-        const statsMap = {};
-        messages.Items.forEach((message) => {
-            const roomId = message.roomId || 'chung';
-            if (groupDict[roomId] || roomId.startsWith('dm_')) {
-                const roomName = groupDict[roomId] || 'Chat Rieng';
-                statsMap[roomName] = (statsMap[roomName] || 0) + 1;
-            }
-        });
-
-        const chartData = Object.keys(statsMap).map((name) => ({ name, value: statsMap[name] }));
-        const userActivity = {};
-        messages.Items.forEach((message) => {
-            userActivity[message.senderUsername] = (userActivity[message.senderUsername] || 0) + 1;
-        });
-
-        const topUsers = Object.keys(userActivity)
-            .map((username) => {
-                const userInfo = users.Items.find((item) => item.username === username);
-                return {
-                    name: userInfo ? userInfo.displayName : username,
-                    count: userActivity[username],
-                };
-            })
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 5);
-
-        res.json({
-            totalUsers: users.Count,
-            totalMessages: messages.Count,
-            onlineNow: presenceStore.getOnlineCount(),
-            totalGroups: groups.Count,
-            chartData,
-            topUsers,
-        });
-    } catch (error) {
-        res.status(500).json(error);
-    }
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 300,
+  message: { message: 'Qua nhieu yeu cau, vui long thu lai sau.' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
-app.get('/api/groups/all', async (req, res) => {
-    const data = await docClient.scan({ TableName: 'Groups' }).promise();
-    res.json(data.Items);
+configureSockets(io);
+
+// Auth routes are public - apply strict rate limit (anti brute-force)
+app.use('/api/auth', authLimiter, authRoutes);
+
+// All other routes require authentication + general rate limit
+app.use('/api/users', apiLimiter, requireAuth, userRoutes);
+app.use('/api', apiLimiter, requireAuth, chatbotRoutes);
+app.use('/api/v1/messages', apiLimiter, requireAuth, messageRoutes);
+app.use('/api/calls', apiLimiter, requireAuth, callRoutes);
+app.use('/api/admin', apiLimiter, requireAuth, adminRoutes);
+app.use('/api/groups', apiLimiter, requireAuth, groupRoutes);
+app.use('/api/friends', apiLimiter, requireAuth, friendRoutes);
+app.use('/api/search', apiLimiter, requireAuth, searchRoutes);
+app.use('/api/utils', apiLimiter, requireAuth, utilsRoutes);
+app.use('/api/stories', apiLimiter, requireAuth, storyRoutes);
+app.use('/api/posts', apiLimiter, requireAuth, postRoutes);
+
+httpServer.listen(PORT, HOST, () => {
+  console.log(`OTT Server v7 Online on ${HOST}:${PORT} with Sanitization + Rate Limiting`);
 });
-
-app.post('/api/groups/create', async (req, res) => {
-  const { groupName, owner, isPublic } = req.body;
-  const groupId = "group_" + Date.now();
-  const item = { groupId, groupName, owner, isPublic: isPublic || false, isDisabled: false, members: isPublic ? [] : [owner], pendingRequests: [], createdAt: new Date().toISOString() };
-  await docClient.put({ TableName: 'Groups', Item: item }).promise();
-  io.emit('groups_updated');
-  res.json(item);
-});
-
-app.post('/api/groups/request', async (req, res) => {
-  const { groupId, username } = req.body;
-  const group = await docClient.get({ TableName: 'Groups', Key: { groupId } }).promise();
-  let pending = group.Item.pendingRequests || [];
-  if (!pending.includes(username)) pending.push(username);
-  await docClient.update({ TableName: 'Groups', Key: { groupId }, UpdateExpression: "set pendingRequests = :p", ExpressionAttributeValues: { ":p": pending } }).promise();
-  io.emit('groups_updated');
-  res.json({ success: true });
-});
-
-app.post('/api/groups/approve', async (req, res) => {
-  const { groupId, targetUsername, action } = req.body;
-  const data = await docClient.get({ TableName: 'Groups', Key: { groupId } }).promise();
-  let { members, pendingRequests } = data.Item;
-  
-  // Xóa khỏi danh sách chờ
-  pendingRequests = pendingRequests.filter(u => u !== targetUsername);
-  
-  if (action === 'accept') {
-    if (!members.includes(targetUsername)) members.push(targetUsername);
-  }
-  
-  await docClient.update({ 
-    TableName: 'Groups', 
-    Key: { groupId }, 
-    UpdateExpression: "set members = :m, pendingRequests = :p", 
-    ExpressionAttributeValues: { ":m": members, ":p": pendingRequests } 
-  }).promise();
-  
-  io.emit('groups_updated'); 
-  res.json({ success: true });
-});
-
-app.post('/api/groups/manage', async (req, res) => {
-    const { groupId, action } = req.body;
-
-    if (action === 'delete') {
-        await docClient.delete({ TableName: 'Groups', Key: { groupId } }).promise();
-    } else {
-        const group = await docClient.get({ TableName: 'Groups', Key: { groupId } }).promise();
-        await docClient.update({
-            TableName: 'Groups',
-            Key: { groupId },
-            UpdateExpression: 'set isDisabled = :isDisabled',
-            ExpressionAttributeValues: {
-                ':isDisabled': !group.Item.isDisabled,
-            },
-        }).promise();
-    }
-
-    io.emit('groups_updated');
-    res.json({ success: true });
-});
-
-app.post('/api/groups/remove-member', async (req, res) => {
-    const { groupId, targetUsername } = req.body;
-    const data = await docClient.get({ TableName: 'Groups', Key: { groupId } }).promise();
-    const members = (data.Item.members || []).filter((username) => username !== targetUsername);
-
-    await docClient.update({
-        TableName: 'Groups',
-        Key: { groupId },
-        UpdateExpression: 'set members = :members',
-        ExpressionAttributeValues: {
-            ':members': members,
-        },
-    }).promise();
-
-    io.emit('groups_updated');
-    res.json({ success: true });
-});
-
-app.post('/api/friends/request', async (req, res) => {
-  const { fromUser, toUser } = req.body;
-  const target = await docClient.get({ TableName: 'Users', Key: { username: toUser } }).promise();
-  if(!target.Item) return res.status(404).send("User not found");
-  let requests = target.Item.friendRequests || [];
-  if (!requests.includes(fromUser)) requests.push(fromUser);
-  await docClient.update({ TableName: 'Users', Key: { username: toUser }, UpdateExpression: "set friendRequests = :r", ExpressionAttributeValues: { ":r": requests } }).promise();
-  io.emit('groups_updated');
-  res.json({ success: true });
-});
-
-app.post('/api/friends/accept', async (req, res) => {
-  const { me, friendUname } = req.body;
-  const myData = await docClient.get({ TableName: 'Users', Key: { username: me } }).promise();
-  let myF = myData.Item.friends || [];
-  let myR = (myData.Item.friendRequests || []).filter(u => u !== friendUname);
-  if(!myF.includes(friendUname)) myF.push(friendUname);
-  await docClient.update({ TableName: 'Users', Key: { username: me }, UpdateExpression: "set friends = :f, friendRequests = :r", ExpressionAttributeValues: { ":f": myF, ":r": myR } }).promise();
-  const fData = await docClient.get({ TableName: 'Users', Key: { username: friendUname } }).promise();
-  let fF = fData.Item.friends || [];
-  if(!fF.includes(me)) fF.push(me);
-  await docClient.update({ TableName: 'Users', Key: { username: friendUname }, UpdateExpression: "set friends = :f", ExpressionAttributeValues: { ":f": fF } }).promise();
-  io.emit('groups_updated');
-  res.json({ success: true });
-});
-
-app.post('/api/friends/unfriend', async (req, res) => {
-    const { me, friendUname } = req.body;
-    try {
-        const myData = await docClient.get({ TableName: 'Users', Key: { username: me } }).promise();
-        let myF = (myData.Item.friends || []).filter(u => u !== friendUname);
-        await docClient.update({ TableName: 'Users', Key: { username: me }, UpdateExpression: "set friends = :f", ExpressionAttributeValues: { ":f": myF } }).promise();
-        const fData = await docClient.get({ TableName: 'Users', Key: { username: friendUname } }).promise();
-        let fF = (fData.Item.friends || []).filter(u => u !== me);
-        await docClient.update({ TableName: 'Users', Key: { username: friendUname }, UpdateExpression: "set friends = :f", ExpressionAttributeValues: { ":f": fF } }).promise();
-        io.emit('groups_updated'); 
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json(error);
-    }
-});
-
-// --- 4. PROFILE ---
-app.get('/api/users/:username', async (req, res) => {
-    const data = await docClient.get({ TableName: 'Users', Key: { username: req.params.username } }).promise();
-    if (data.Item) {
-        const { password, ...safeUser } = data.Item;
-        res.json(safeUser);
-    } else {
-        res.status(404).send('Not found');
-    }
-});
-
-app.post('/api/users/update', async (req, res) => {
-  const { username, displayName, bio, phone, address, avatar } = req.body;
-  // CHẶN SỬA EMAIL (Bỏ field email khỏi UpdateExpression)
-  const params = { 
-    TableName: 'Users', Key: { username }, 
-    UpdateExpression: "set displayName = :d, bio = :b, phone = :p, address = :a, avatar = :av", 
-    ExpressionAttributeValues: { ":d": displayName, ":b": bio||"", ":p": phone||"", ":a": address||"", ":av": avatar||null }, 
-    ReturnValues: "ALL_NEW" 
-  };
-  const data = await docClient.update(params).promise();
-  res.json(data.Attributes);
-});
-
-app.get('/api/messages/:username', async (req, res) => {
-    const data = await docClient.scan({ TableName: 'Messages' }).promise();
-    res.json(data.Items.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)));
-});
-
-// Thêm API này vào server.js (trước đoạn socket)
-app.post('/api/messages/delete-for-me', async (req, res) => {
-  const { username, messageId } = req.body;
-  try {
-    const userData = await docClient.get({ TableName: 'Users', Key: { username } }).promise();
-    let deletedMsgs = userData.Item.deletedMessages || [];
-    
-    if (!deletedMsgs.includes(messageId)) {
-      deletedMsgs.push(messageId);
-    }
-
-    await docClient.update({
-      TableName: 'Users',
-      Key: { username },
-      UpdateExpression: "set deletedMessages = :d",
-      ExpressionAttributeValues: { ":d": deletedMsgs }
-    }).promise();
-
-    res.json({ success: true });
-  } catch (err) { res.status(500).json(err); }
-});
-
-// Và API xóa toàn bộ lịch sử (Clear chat)
-app.post('/api/messages/clear-history', async (req, res) => {
-    const { username, roomId } = req.body;
-    try {
-        // Lấy tất cả tin nhắn của phòng đó
-        const allMsgs = await docClient.scan({ 
-            TableName: 'Messages',
-            FilterExpression: "roomId = :r",
-            ExpressionAttributeValues: { ":r": roomId }
-        }).promise();
-        
-        const msgIdsInRoom = allMsgs.Items.map(m => m.messageId);
-        const userData = await docClient.get({ TableName: 'Users', Key: { username } }).promise();
-        let deletedMsgs = userData.Item.deletedMessages || [];
-        
-        // Thêm tất cả ID tin nhắn trong phòng này vào danh sách đã xóa của User
-        const newDeletedList = Array.from(new Set([...deletedMsgs, ...msgIdsInRoom]));
-
-        await docClient.update({
-            TableName: 'Users',
-            Key: { username },
-            UpdateExpression: "set deletedMessages = :d",
-            ExpressionAttributeValues: { ":d": newDeletedList }
-        }).promise();
-
-        res.json({ success: true });
-    } catch (err) { res.status(500).json(err); }
-});
-
-// --- 5. SOCKET REALTIME ---
-// Tìm đoạn io.on('connection', ...) và sửa lại hàm user_online
-io.on('connection', (socket) => {
-  socket.on('user_online', (u) => { 
-    if(u?.username){ 
-      // Ghi đè thông tin mới nhất (avatar, displayName) vào danh sách online
-      onlineUsers[u.username] = {...u, socketId: socket.id}; 
-      io.emit('update_user_list', onlineUsers); 
-    }
-  });
-
-  socket.on('admin_update_group', () => io.emit('groups_updated'));
-  socket.on('send_message', async (d) => {
-    const item = { messageId: Date.now().toString(), ...d, isRevoked: false, createdAt: new Date().toISOString() };
-    await docClient.put({ TableName: 'Messages', Item: item }).promise();
-    io.emit('receive_message', item);
-  });
-  
-  socket.on('revoke_message', async (id) => {
-    await docClient.update({ TableName: 'Messages', Key: { messageId: id }, UpdateExpression: "set #t = :txt, isRevoked = :rev, fileData = :f, fileType = :ft", ExpressionAttributeNames: { "#t": "text" }, ExpressionAttributeValues: { ":txt": "Tin nhắn này đã bị thu hồi", ":rev": true, ":f": null, ":ft": null } }).promise();
-    io.emit('message_revoked', id);
-  });
-  
-  socket.on('disconnect', () => {
-    for(let u in onlineUsers) if(onlineUsers[u].socketId === socket.id){ delete onlineUsers[u]; break; }
-    io.emit('update_user_list', onlineUsers);
-  });
-});
-
-const authRoutes = require('./routes/authRoutes');
-app.use('/api/auth', authRoutes);
-
-const chatbotRoutes = require('./routes/chatbotRoutes');
-app.use('/api', chatbotRoutes);
-
-const messageRoutes = require('./routes/messageRoutes');
-app.use('/api/v1/messages', messageRoutes);
-
-httpServer.listen(3001, () => console.log(`🚀 OTT Server v5 Online`));
