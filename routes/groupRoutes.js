@@ -14,4 +14,12 @@ router.post('/transfer-ownership', groupController.transferOwnership);
 router.post('/invite', groupController.inviteToGroup);
 router.post('/update-avatar', groupController.updateGroupAvatar);
 
+// New Routes for Invite Links & Moderation
+router.post('/invite-link/toggle', groupController.toggleInviteLink);
+router.post('/invite-link/reset', groupController.resetInviteLink);
+router.post('/join-by-invite', groupController.joinByInvite);
+router.post('/mute', groupController.muteMember);
+router.post('/unmute', groupController.unmuteMember);
+router.post('/toggle-channel', groupController.toggleChannelMode);
+
 module.exports = router;

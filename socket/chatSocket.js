@@ -65,6 +65,42 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
                 }
             }
 
+            // Check group moderation and permissions
+            if (payload.roomId && payload.roomId.startsWith('group_')) {
+                const { GetCommand } = require("@aws-sdk/lib-dynamodb");
+                const groupData = await docClient.send(new GetCommand({
+                    TableName: 'Groups',
+                    Key: { groupId: payload.roomId }
+                }));
+                if (groupData.Item) {
+                    const group = groupData.Item;
+                    const username = socket.user.username;
+
+                    // 1. Check if group is disabled
+                    if (group.isDisabled) {
+                        socket.emit('error_message', { error: 'Nhóm chat đã bị khóa.' });
+                        return;
+                    }
+
+                    // 2. Check if user is muted in this group
+                    if (group.mutedMembers && group.mutedMembers[username]) {
+                        const muteUntil = group.mutedMembers[username];
+                        if (new Date(muteUntil) > new Date()) {
+                            socket.emit('error_message', { error: 'Bạn đã bị cấm gửi tin nhắn trong nhóm này.' });
+                            return;
+                        }
+                    }
+
+                    // 3. Check if channel mode is enabled (only owner/mods can post)
+                    const isOwner = group.owner === username;
+                    const isMod = (group.mods || []).includes(username);
+                    if (group.isChannel && !isOwner && !isMod) {
+                        socket.emit('error_message', { error: 'Chỉ Admin/Mod mới có thể gửi tin nhắn trong kênh này.' });
+                        return;
+                    }
+                }
+            }
+
             let finalFileData = payload.fileData;
             
             // Nếu có file và đang ở định dạng base64 (data URI)
