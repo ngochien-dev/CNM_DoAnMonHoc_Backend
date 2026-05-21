@@ -33,6 +33,8 @@ const createGroup = async (req, res) => {
       mods: [], // Thêm mảng chứa MOD
       inviteToken: crypto.randomBytes(8).toString('hex'),
       inviteLinkEnabled: true,
+      inviteApprovalRequired: false,
+      linkApprovalRequired: false,
       mutedMembers: {},
       createdAt: new Date().toISOString()
     };
@@ -277,7 +279,7 @@ const transferOwnership = async (req, res) => {
   }
 };
 
-// P1: Invite user directly to group (owner/mod only)
+// P1: Invite user directly to group
 const inviteToGroup = async (req, res) => {
   try {
     const { groupId, targetUsername } = req.body;
@@ -288,7 +290,11 @@ const inviteToGroup = async (req, res) => {
 
     const isOwner = data.Item.owner === callerUsername;
     const isMod = (data.Item.mods || []).includes(callerUsername);
-    if (!isOwner && !isMod) return res.status(403).json({ error: "Chỉ chủ nhóm hoặc MOD mới có thể mời thành viên!" });
+    const isMember = (data.Item.members || []).includes(callerUsername);
+    
+    if (!isOwner && !isMod && !isMember) {
+      return res.status(403).json({ error: "Bạn không có quyền mời thành viên vào nhóm này!" });
+    }
 
     // Check if target user exists
     const targetData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username: targetUsername } }));
@@ -299,19 +305,38 @@ const inviteToGroup = async (req, res) => {
       return res.status(400).json({ error: "Người dùng đã là thành viên!" });
     }
 
-    members.push(targetUsername);
-    // Also remove from pending if they had a pending request
-    let pending = (data.Item.pendingRequests || []).filter(u => u !== targetUsername);
+    const isApprovalReq = data.Item.inviteApprovalRequired || false;
+    const needsApproval = !isOwner && !isMod && isApprovalReq;
 
-    await docClient.send(new UpdateCommand({
-      TableName: 'Groups',
-      Key: { groupId },
-      UpdateExpression: "set members = :m, pendingRequests = :p",
-      ExpressionAttributeValues: { ":m": members, ":p": pending }
-    }));
+    if (needsApproval) {
+      let pending = data.Item.pendingRequests || [];
+      if (!pending.includes(targetUsername)) {
+        pending.push(targetUsername);
+      }
+      await docClient.send(new UpdateCommand({
+        TableName: 'Groups',
+        Key: { groupId },
+        UpdateExpression: "set pendingRequests = :p",
+        ExpressionAttributeValues: { ":p": pending }
+      }));
 
-    req.app.get('io').emit('groups_updated');
-    res.json({ success: true });
+      req.app.get('io').emit('groups_updated');
+      return res.json({ success: true, joined: false });
+    } else {
+      members.push(targetUsername);
+      // Also remove from pending if they had a pending request
+      let pending = (data.Item.pendingRequests || []).filter(u => u !== targetUsername);
+
+      await docClient.send(new UpdateCommand({
+        TableName: 'Groups',
+        Key: { groupId },
+        UpdateExpression: "set members = :m, pendingRequests = :p",
+        ExpressionAttributeValues: { ":m": members, ":p": pending }
+      }));
+
+      req.app.get('io').emit('groups_updated');
+      return res.json({ success: true, joined: true });
+    }
   } catch (err) {
     res.status(500).json(err);
   }
@@ -436,24 +461,44 @@ const joinByInvite = async (req, res) => {
 
     let members = group.members || [];
     if (members.includes(username)) {
-      return res.json({ success: true, groupId: group.groupId, groupName: group.groupName });
+      return res.json({ success: true, joined: true, groupId: group.groupId, groupName: group.groupName });
     }
 
-    members.push(username);
-    let pending = (group.pendingRequests || []).filter(u => u !== username);
+    const linkApprovalRequired = group.linkApprovalRequired || false;
 
-    await docClient.send(new UpdateCommand({
-      TableName: 'Groups',
-      Key: { groupId: group.groupId },
-      UpdateExpression: "set members = :m, pendingRequests = :p",
-      ExpressionAttributeValues: {
-        ":m": members,
-        ":p": pending
+    if (linkApprovalRequired) {
+      let pending = group.pendingRequests || [];
+      if (!pending.includes(username)) {
+        pending.push(username);
       }
-    }));
+      await docClient.send(new UpdateCommand({
+        TableName: 'Groups',
+        Key: { groupId: group.groupId },
+        UpdateExpression: "set pendingRequests = :p",
+        ExpressionAttributeValues: {
+          ":p": pending
+        }
+      }));
 
-    req.app.get('io').emit('groups_updated');
-    res.json({ success: true, groupId: group.groupId, groupName: group.groupName });
+      req.app.get('io').emit('groups_updated');
+      res.json({ success: true, joined: false, groupId: group.groupId, groupName: group.groupName });
+    } else {
+      members.push(username);
+      let pending = (group.pendingRequests || []).filter(u => u !== username);
+
+      await docClient.send(new UpdateCommand({
+        TableName: 'Groups',
+        Key: { groupId: group.groupId },
+        UpdateExpression: "set members = :m, pendingRequests = :p",
+        ExpressionAttributeValues: {
+          ":m": members,
+          ":p": pending
+        }
+      }));
+
+      req.app.get('io').emit('groups_updated');
+      res.json({ success: true, joined: true, groupId: group.groupId, groupName: group.groupName });
+    }
   } catch (err) {
     res.status(500).json(err);
   }
@@ -546,6 +591,62 @@ const unmuteMember = async (req, res) => {
   }
 };
 
+const toggleInviteApproval = async (req, res) => {
+  try {
+    const { groupId } = req.body;
+    const callerUsername = req.auth.username;
+
+    const group = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
+    if (!group.Item) return res.status(404).json({ error: "Không tìm thấy nhóm!" });
+
+    const isOwner = group.Item.owner === callerUsername;
+    const isMod = (group.Item.mods || []).includes(callerUsername);
+    if (!isOwner && !isMod) return res.status(403).json({ error: "Bạn không có quyền quản lý cấu hình duyệt mời thành viên!" });
+
+    const newVal = !group.Item.inviteApprovalRequired;
+
+    await docClient.send(new UpdateCommand({
+      TableName: 'Groups',
+      Key: { groupId },
+      UpdateExpression: "set inviteApprovalRequired = :v",
+      ExpressionAttributeValues: { ":v": newVal }
+    }));
+
+    req.app.get('io').emit('groups_updated');
+    res.json({ success: true, inviteApprovalRequired: newVal });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
+const toggleLinkApproval = async (req, res) => {
+  try {
+    const { groupId } = req.body;
+    const callerUsername = req.auth.username;
+
+    const group = await docClient.send(new GetCommand({ TableName: 'Groups', Key: { groupId } }));
+    if (!group.Item) return res.status(404).json({ error: "Không tìm thấy nhóm!" });
+
+    const isOwner = group.Item.owner === callerUsername;
+    const isMod = (group.Item.mods || []).includes(callerUsername);
+    if (!isOwner && !isMod) return res.status(403).json({ error: "Bạn không có quyền quản lý cấu hình duyệt liên kết mời!" });
+
+    const newVal = !group.Item.linkApprovalRequired;
+
+    await docClient.send(new UpdateCommand({
+      TableName: 'Groups',
+      Key: { groupId },
+      UpdateExpression: "set linkApprovalRequired = :v",
+      ExpressionAttributeValues: { ":v": newVal }
+    }));
+
+    req.app.get('io').emit('groups_updated');
+    res.json({ success: true, linkApprovalRequired: newVal });
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 const toggleChannelMode = async (req, res) => {
   try {
     const { groupId } = req.body;
@@ -556,19 +657,19 @@ const toggleChannelMode = async (req, res) => {
 
     const isOwner = group.Item.owner === callerUsername;
     const isMod = (group.Item.mods || []).includes(callerUsername);
-    if (!isOwner && !isMod) return res.status(403).json({ error: "Bạn không có quyền thay đổi chế độ kênh!" });
+    if (!isOwner && !isMod) return res.status(403).json({ error: "Bạn không có quyền quản lý cấu hình chế độ thông báo (Kênh)!" });
 
-    const newIsChannel = !group.Item.isChannel;
+    const newVal = !group.Item.isChannel;
 
     await docClient.send(new UpdateCommand({
       TableName: 'Groups',
       Key: { groupId },
-      UpdateExpression: "set isChannel = :c",
-      ExpressionAttributeValues: { ":c": newIsChannel }
+      UpdateExpression: "set isChannel = :v",
+      ExpressionAttributeValues: { ":v": newVal }
     }));
 
     req.app.get('io').emit('groups_updated');
-    res.json({ success: true, isChannel: newIsChannel });
+    res.json({ success: true, isChannel: newVal });
   } catch (err) {
     res.status(500).json(err);
   }
@@ -591,5 +692,7 @@ module.exports = {
   joinByInvite,
   muteMember,
   unmuteMember,
-  toggleChannelMode
+  toggleChannelMode,
+  toggleInviteApproval,
+  toggleLinkApproval
 };

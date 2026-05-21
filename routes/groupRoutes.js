@@ -21,5 +21,7 @@ router.post('/join-by-invite', groupController.joinByInvite);
 router.post('/mute', groupController.muteMember);
 router.post('/unmute', groupController.unmuteMember);
 router.post('/toggle-channel', groupController.toggleChannelMode);
+router.post('/toggle-invite-approval', groupController.toggleInviteApproval);
+router.post('/toggle-link-approval', groupController.toggleLinkApproval);
 
 module.exports = router;
