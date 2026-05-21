@@ -19,6 +19,7 @@ const searchRoutes = require('./routes/searchRoutes');
 const utilsRoutes = require('./routes/utilsRoutes');
 const storyRoutes = require('./routes/storyRoutes');
 const postRoutes = require('./routes/postRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 const configureSockets = require('./socket');
 
@@ -102,6 +103,7 @@ app.use('/api/search', apiLimiter, requireAuth, searchRoutes);
 app.use('/api/utils', apiLimiter, requireAuth, utilsRoutes);
 app.use('/api/stories', apiLimiter, requireAuth, storyRoutes);
 app.use('/api/posts', apiLimiter, requireAuth, postRoutes);
+app.use('/api/notifications', apiLimiter, requireAuth, notificationRoutes);
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`OTT Server v7 Online on ${HOST}:${PORT} with Sanitization + Rate Limiting`);
