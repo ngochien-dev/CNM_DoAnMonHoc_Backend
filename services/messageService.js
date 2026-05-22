@@ -245,8 +245,19 @@ exports.searchPinnedMessages = async (channelId) => {
       ExpressionAttributeValues: values
     };
 
-    const data = await docClient.scan(params).promise();
-    return data.Items || [];
+    let items = [];
+    let lastKey = undefined;
+
+    do {
+        const data = await docClient.scan({
+            ...params,
+            ...(lastKey ? { ExclusiveStartKey: lastKey } : {})
+        }).promise();
+        items = items.concat(data.Items || []);
+        lastKey = data.LastEvaluatedKey;
+    } while (lastKey);
+
+    return items;
   } catch (err) {
     throw new Error('Error when searching pinned messages: ' + err.message);
   }

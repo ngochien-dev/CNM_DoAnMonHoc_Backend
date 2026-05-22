@@ -489,16 +489,23 @@ exports.markAsRead = async (req, res) => {
 exports.getRoomMedia = async (req, res) => {
     const { roomId } = req.params;
     try {
-        const data = await docClient.send(new ScanCommand({
-            TableName: 'Messages',
-            FilterExpression: "roomId = :r AND isRevoked <> :true",
-            ExpressionAttributeValues: { 
-                ":r": roomId,
-                ":true": true
-            }
-        }));
+        let items = [];
+        let lastKey = undefined;
 
-        const items = data.Items || [];
+        do {
+            const data = await docClient.send(new ScanCommand({
+                TableName: 'Messages',
+                FilterExpression: "roomId = :r AND isRevoked <> :true",
+                ExpressionAttributeValues: { 
+                    ":r": roomId,
+                    ":true": true
+                },
+                ...(lastKey ? { ExclusiveStartKey: lastKey } : {})
+            }));
+            items = items.concat(data.Items || []);
+            lastKey = data.LastEvaluatedKey;
+        } while (lastKey);
+
         const urlRegex = /((?:https?:\/\/|www\.)[^\s]+|[a-zA-Z0-9.-]+\.(?:com|net|org|vn|edu|gov|io)[^\s]*)/g;
 
         const media = items.filter(m => m.fileData && (m.fileType === 'image' || m.fileType === 'video'))
@@ -521,6 +528,8 @@ exports.getRoomMedia = async (req, res) => {
 
         const polls = items.filter(m => m.msgType === 'poll' || m.pollData)
             .map(m => ({ messageId: m.messageId, pollData: m.pollData, text: m.text, sentAt: m.createdAt || m.time || m.sentAt, senderUsername: m.senderUsername }));
+
+        require('fs').writeFileSync('debug_polls.json', JSON.stringify(items.filter(m => m.msgType === 'poll' || m.pollData || (m.text && m.text.includes('Bình chọn'))), null, 2));
 
         const events = items.filter(m => m.msgType === 'event' || m.eventData)
             .map(m => ({ messageId: m.messageId, eventData: m.eventData, text: m.text, sentAt: m.createdAt || m.time || m.sentAt, senderUsername: m.senderUsername }));
