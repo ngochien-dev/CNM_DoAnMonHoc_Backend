@@ -502,10 +502,10 @@ exports.getRoomMedia = async (req, res) => {
         const urlRegex = /((?:https?:\/\/|www\.)[^\s]+|[a-zA-Z0-9.-]+\.(?:com|net|org|vn|edu|gov|io)[^\s]*)/g;
 
         const media = items.filter(m => m.fileData && (m.fileType === 'image' || m.fileType === 'video'))
-            .map(m => ({ messageId: m.messageId, fileData: m.fileData, fileType: m.fileType, sentAt: m.sentAt, senderUsername: m.senderUsername }));
+            .map(m => ({ messageId: m.messageId, fileData: m.fileData, fileType: m.fileType, sentAt: m.createdAt || m.time || m.sentAt, senderUsername: m.senderUsername }));
             
         const files = items.filter(m => m.fileData && m.fileType !== 'image' && m.fileType !== 'video')
-            .map(m => ({ messageId: m.messageId, fileData: m.fileData, fileName: m.fileName, fileType: m.fileType, sentAt: m.sentAt, senderUsername: m.senderUsername }));
+            .map(m => ({ messageId: m.messageId, fileData: m.fileData, fileName: m.fileName, fileType: m.fileType, sentAt: m.createdAt || m.time || m.sentAt, senderUsername: m.senderUsername }));
 
         const links = [];
         items.forEach(m => {
@@ -513,16 +513,24 @@ exports.getRoomMedia = async (req, res) => {
                 const matches = m.text.match(urlRegex);
                 if (matches) {
                     matches.forEach(url => {
-                        links.push({ messageId: m.messageId, url: url.replace(/\.+$/, '').trim(), sentAt: m.sentAt, senderUsername: m.senderUsername, text: m.text });
+                        links.push({ messageId: m.messageId, url: url.replace(/\.+$/, '').trim(), sentAt: m.createdAt || m.time || m.sentAt, senderUsername: m.senderUsername, text: m.text });
                     });
                 }
             }
         });
 
+        const polls = items.filter(m => m.msgType === 'poll' || m.pollData)
+            .map(m => ({ messageId: m.messageId, pollData: m.pollData, text: m.text, sentAt: m.createdAt || m.time || m.sentAt, senderUsername: m.senderUsername }));
+
+        const events = items.filter(m => m.msgType === 'event' || m.eventData)
+            .map(m => ({ messageId: m.messageId, eventData: m.eventData, text: m.text, sentAt: m.createdAt || m.time || m.sentAt, senderUsername: m.senderUsername }));
+
         res.json({
-            media: media.sort((a, b) => b.sentAt - a.sentAt),
-            files: files.sort((a, b) => b.sentAt - a.sentAt),
-            links: links.sort((a, b) => b.sentAt - a.sentAt)
+            media: media.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)),
+            files: files.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)),
+            links: links.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)),
+            polls: polls.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)),
+            events: events.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt))
         });
     } catch (err) {
         console.error("GetRoomMedia error:", err);
