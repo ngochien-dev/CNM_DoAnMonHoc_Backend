@@ -1,62 +1,161 @@
 # 🚀 OTT Project — Backend Architecture & API Documentation
 
-Tài liệu này cung cấp cái nhìn toàn diện về kiến trúc hệ thống, chức năng của từng thư mục, tệp tin và hướng dẫn triển khai phía Backend của nền tảng nhắn tin/gọi điện OTT.
+**Version**: 7.0 | **Last Updated**: 2026-05-22 | **Status**: Production-Ready
+
+Tài liệu này cung cấp cái nhìn toàn diện về kiến trúc hệ thống, chức năng của từng thư mục, tệp tin và hướng dẫn triển khai phía Backend của nền tảng nhắn tin/gọi điện OTT (One-to-One Messaging & Video Call Platform).
+
+---
+
+## 🎯 Overview
+
+**OTT Backend** là một **REST API + WebSocket server** được xây dựng trên Express.js, cung cấp:
+- ✅ **Real-time Messaging** (1-1, Group chat với Socket.IO)
+- ✅ **Video/Audio Calls** (WebRTC P2P signaling)
+- ✅ **User Management** (JWT Auth, Profile, Friends, Block)
+- ✅ **Group Management** (Create, Members, Admin roles)
+- ✅ **Admin Dashboard** (Statistics, User Management)
+- ✅ **File Storage** (AWS S3 Integration)
+- ✅ **Cloud Notifications** (Firebase Cloud Messaging)
+- ✅ **AI Chatbot** (Google Gemini Integration)
+- ✅ **Stories** (24h expiry)
+- ✅ **Posts** (với comments & reactions)
+- ✅ **Search** (Users, Groups, Messages)
+
+**Tech Stack**: Node.js + Express.js + Socket.IO + AWS DynamoDB + S3
 
 ---
 
 ## 📂 Cấu trúc thư mục (Directory Structure)
 
+```
+backend/
+├── controllers/          # 13 request handlers
+│   ├── authController.js
+│   ├── userController.js
+│   ├── messageController.js
+│   ├── groupController.js
+│   ├── friendController.js
+│   ├── callController.js
+│   ├── adminController.js
+│   ├── chatbotController.js
+│   ├── notificationController.js
+│   ├── storyController.js
+│   ├── postController.js
+│   ├── searchController.js
+│   └── utilsController.js
+├── middlewares/          # Auth & validation
+│   ├── authMiddleware.js (JWT validation)
+│   ├── sanitize.js (XSS protection)
+│   └── socketAuth.js
+├── models/               # Database layer
+│   ├── userModel.js
+│   ├── callModel.js
+│   └── awsConfig.js
+├── routes/               # 13 API endpoint files
+├── services/             # Business logic
+│   ├── s3Service.js
+│   ├── messageService.js
+│   ├── callService.js
+│   └── fcmService.js
+├── socket/               # Real-time events
+│   ├── index.js (Socket.IO setup)
+│   ├── chatSocket.js (messaging events)
+│   └── callSocket.js (WebRTC signals)
+├── store/                # In-memory state
+│   ├── presenceStore.js (online/offline)
+│   └── activeCalls.js (call tracking)
+├── utils/
+│   └── webrtcConfig.js
+├── server.js             # Express app entry
+├── awsConfig.js
+├── package.json
+└── .env
+```
+
 Dưới đây là chi tiết vai trò của từng thư mục và tệp tin mã nguồn trong hệ thống Backend:
 
 ### `controllers/`
 Chứa toàn bộ logic xử lý các yêu cầu HTTP từ Client, giao tiếp với các Model/Service và trả về phản hồi (Response) dạng JSON.
-- **`adminController.js`**: Xử lý logic dành cho Quản trị viên (Admin) bao gồm lấy số liệu thống kê tổng quan (lưu lượng tin nhắn 7 ngày, số lượng tệp đính kèm, tổng số user/group) và quản lý tài khoản (xem danh sách, khóa/mở khóa tài khoản, đặt lại mật khẩu mặc định).
-- **`authController.js`**: Quản lý luồng xác thực người dùng bao gồm đăng ký, đăng nhập, xác thực mã OTP, quên mật khẩu và đổi mật khẩu. Có cơ chế tự động ngắt kết nối các thiết bị khác khi mật khẩu thay đổi.
-- **`callController.js`**: Quản lý các phiên WebRTC/Cuộc gọi (tạo tín hiệu kết nối, xác thực token phòng gọi).
-- **`chatbotController.js`**: Tích hợp xử lý truy vấn từ Chatbot thông minh, hỗ trợ trả lời tự động cho người dùng.
-- **`friendController.js`**: Xử lý nghiệp vụ bạn bè (gửi lời mời kết bạn, chấp nhận, từ chối, hủy kết bạn, lấy danh sách bạn bè).
-- **`groupController.js`**: Quản lý các nhóm chat (tạo nhóm, thêm/xóa thành viên, rời nhóm, lấy danh sách nhóm).
-- **`messageController.js`**: Quản lý tin nhắn (lấy lịch sử tin nhắn, gửi tin có đính kèm file base64/S3, thu hồi tin nhắn, ghim tin nhắn, tạo và bỏ phiếu bình chọn Poll).
-- **`userController.js`**: Xử lý logic hồ sơ người dùng (tìm kiếm người dùng, xem và cập nhật thông tin cá nhân, thay đổi ảnh đại diện).
+
+| Controller | Chức năng chính |
+|-----------|----------------|
+| **`authController.js`** | Đăng ký, đăng nhập, OTP verify, quên mật khẩu, đổi mật khẩu, auto logout on password change |
+| **`userController.js`** | Tìm kiếm user, view/edit profile, avatar upload, status updates |
+| **`messageController.js`** | CRUD tin nhắn, file attachment (S3), message recall/delete, pinning, polls/voting |
+| **`groupController.js`** | Tạo/quản lý nhóm, thêm/xóa thành viên, admin roles |
+| **`friendController.js`** | Friend request, accept/reject, remove friend, block list |
+| **`callController.js`** | WebRTC signaling, ICE candidates, call history |
+| **`chatbotController.js`** | Google Gemini integration, auto-reply |
+| **`adminController.js`** | User statistics, message analytics, user ban/unban, password reset |
+| **`notificationController.js`** | FCM push notifications, notification history |
+| **`storyController.js`** | Story create/view, 24h expiry, reactions |
+| **`postController.js`** | Post CRUD, comments, likes/reactions |
+| **`searchController.js`** | Global search (users, groups, messages) |
+| **`utilsController.js`** | File upload helpers, data processing |
 
 ### `middlewares/`
 Các hàm trung gian kiểm tra và xác thực yêu cầu trước khi chuyển tiếp đến Controller chính.
-- **`authMiddleware.js`**: Kiểm tra và giải mã JWT token (Bearer Token) từ HTTP Header. Tự động từ chối và ngắt kết nối nếu tài khoản chưa được xác thực (`isVerified: false`) hoặc đã bị Admin khóa (`isBanned: true`).
-- **`socketAuth.js`**: Middleware chuyên dụng để xác thực tính hợp lệ của token khi Client khởi tạo kết nối Socket.IO thời gian thực.
+
+| Middleware | Mục đích |
+|-----------|---------|
+| **`authMiddleware.js`** | JWT token validation, Bearer token extraction, isVerified check, isBanned check |
+| **`socketAuth.js`** | Socket.IO authentication & token validation |
+| **`sanitize.js`** | XSS protection, HTML sanitization, script injection blocking |
 
 ### `models/`
 Định nghĩa cấu trúc dữ liệu và các hàm giao tiếp trực tiếp với cơ sở dữ liệu AWS DynamoDB.
-- **`userModel.js`**: Quản lý bảng `Users` (tìm kiếm theo username, tạo mới, cập nhật trạng thái).
-- **`callModel.js`**: Quản lý thông tin và trạng thái các phiên gọi điện.
-- **`awsConfig.js`**: Cấu hình khởi tạo và kết nối AWS SDK cho các Model.
+
+| Model | Bảng DynamoDB |
+|-------|---------------|
+| **`userModel.js`** | Users - username, profile, auth, settings |
+| **`callModel.js`** | Calls - call history, status, duration |
+| **`awsConfig.js`** | AWS SDK initialization & DynamoDB client |
 
 ### `routes/`
 Định nghĩa các endpoint API và ánh xạ chúng tới các Controller tương ứng.
-- **`adminRoutes.js`**: Các endpoint quản trị (`/api/admin/stats`, `/api/admin/users`, `/api/admin/users/toggle-status`, `/api/admin/users/reset-password`).
-- **`authRoutes.js`**: Các endpoint xác thực (`/api/auth/register`, `/api/auth/login`, `/api/auth/verify-otp`, `/api/auth/forgot-password`, `/api/auth/reset-password`, `/api/auth/change-password`).
-- **`callRoutes.js`**: Các endpoint quản lý cuộc gọi WebRTC.
-- **`chatbotRoutes.js`**: Endpoint giao tiếp với Chatbot (`/api/chatbot/ask`).
-- **`friendRoutes.js`**: Các endpoint quản lý danh sách bạn bè.
-- **`groupRoutes.js`**: Các endpoint quản lý nhóm chat.
-- **`messageRoutes.js`**: Các endpoint quản lý tin nhắn và bình chọn.
-- **`userRoutes.js`**: Các endpoint truy xuất và cập nhật hồ sơ người dùng.
+
+| Route File | Endpoints |
+|-----------|-----------|
+| **`authRoutes.js`** | /api/auth/register, login, verify-otp, forgot-password, reset-password, change-password |
+| **`userRoutes.js`** | /api/users/profile, search, update, avatar |
+| **`messageRoutes.js`** | /api/v1/messages/send, history, delete, pin, poll |
+| **`groupRoutes.js`** | /api/groups/create, members, update, delete |
+| **`friendRoutes.js`** | /api/friends/request, accept, reject, list, block |
+| **`callRoutes.js`** | /api/calls/initiate, answer, signal, history |
+| **`adminRoutes.js`** | /api/admin/stats, users, ban, reset-password |
+| **`chatbotRoutes.js`** | /api/chatbot/ask |
+| **`notificationRoutes.js`** | /api/notifications/send, history, read |
+| **`storyRoutes.js`** | /api/stories/create, view, delete |
+| **`postRoutes.js`** | /api/posts/create, comment, like, delete |
+| **`searchRoutes.js`** | /api/search/global |
+| **`utilsRoutes.js`** | /api/utils/upload, process |
 
 ### `services/`
 Chứa các logic nghiệp vụ dùng chung hoặc giao tiếp với các dịch vụ đám mây bên ngoài.
-- **`callService.js`**: Xử lý nghiệp vụ chuyên sâu hỗ trợ luồng kết nối WebRTC.
-- **`messageService.js`**: Xử lý nghiệp vụ chuẩn hóa, định tuyến và phân tích tin nhắn.
-- **`s3Service.js`**: Dịch vụ hỗ trợ tải tệp tin (hình ảnh, tài liệu, video) lên AWS S3 và lấy URL truy cập an toàn.
+
+| Service | Chức năng |
+|---------|----------|
+| **`s3Service.js`** | Upload file to AWS S3, generate pre-signed URLs, file deletion |
+| **`messageService.js`** | Message normalization, routing, conversation threading, indexing |
+| **`callService.js`** | WebRTC setup, ICE candidate management, call state |
+| **`fcmService.js`** | Firebase Cloud Messaging, push notifications, token management |
 
 ### `socket/`
 Quản lý toàn bộ luồng giao tiếp hai chiều thời gian thực (Real-time communication) bằng Socket.IO.
-- **`index.js`**: Điểm neo khởi tạo Socket.IO server, tích hợp middleware `socketAuth` và liên kết các module sự kiện.
-- **`chatSocket.js`**: Quản lý các sự kiện nhắn tin (gửi/nhận tin nhắn, cập nhật danh sách nhóm, phát thông báo kết bạn, phát tín hiệu `force_logout` để ngắt phiên làm việc từ xa).
-- **`callSocket.js`**: Quản lý tín hiệu WebRTC thời gian thực (gọi điện 1-1, chấp nhận/từ chối cuộc gọi, chuyển tiếp ICE candidate, chia sẻ màn hình).
+
+| File | Chức năng |
+|------|----------|
+| **`index.js`** | Socket.IO initialization, middleware setup, event registration |
+| **`chatSocket.js`** | send_message, receive_message, typing_indicator, group_message, friend_request, force_logout, online_status |
+| **`callSocket.js`** | call_initiate, call_answer, call_reject, ice_candidate, screen_share, call_end, call_timeout |
 
 ### `store/`
 Lưu trữ trạng thái tạm thời (In-Memory Store) trên bộ nhớ Server.
-- **`presenceStore.js`**: Theo dõi trạng thái trực tuyến (Online/Offline) của người dùng và ánh xạ `socketId` với `username`.
-- **`activeCalls.js`**: Theo dõi danh sách các phòng gọi đang hoạt động trong thời gian thực.
+
+| Store | Mục đích |
+|-------|---------|
+| **`presenceStore.js`** | Track user online/offline, socketId ↔ username mapping, last seen |
+| **`activeCalls.js`** | Track active call rooms, participants, call duration |
 
 ### `utils/`
 Các hàm và cấu hình tiện ích hỗ trợ.
@@ -83,13 +182,42 @@ npm install
 ```
 
 ### 3. Thiết lập Biến môi trường
-Tạo một tệp `.env` tại thư mục gốc của `backend` với định dạng:
+Tạo một tệp `.env` tại thư mục gốc của `backend`. Xem `.env.example` để tham khảo:
+
 ```env
-PORT=5000
-JWT_SECRET=chuoi_bi_mat_jwt_cua_ban
+# Server
+HOST=0.0.0.0
+PORT=3001
+
+# JWT Authentication
+JWT_SECRET=your_super_secret_key_here
+
+# AWS Configuration
 AWS_REGION=ap-southeast-1
-AWS_ACCESS_KEY_ID=ma_truy_cap_aws_cua_ban
-AWS_SECRET_ACCESS_KEY=ma_bi_mat_aws_cua_ban
+AWS_ACCESS_KEY_ID=your_aws_access_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret_key
+S3_BUCKET_NAME=your_s3_bucket_name
+
+# Email (Nodemailer - for OTP & notifications)
+EMAIL_USER=your_email@gmail.com
+EMAIL_PASS=your_app_password
+
+# Google Gemini API (for Chatbot)
+GEMINI_API_KEY=your_gemini_api_key
+
+# CORS Configuration
+FRONTEND_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+
+# WebRTC Configuration
+WEBRTC_STUN_URLS=stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302
+WEBRTC_TURN_URLS=turn:your-turn-server.com:3478
+WEBRTC_TURN_USERNAME=your_turn_username
+WEBRTC_TURN_CREDENTIAL=your_turn_credential
+
+# Call Settings
+CALL_DEBUG=true
+CALLS_TABLE_NAME=Calls
+CALL_RING_TIMEOUT_MS=30000
 ```
 
 ### 4. Khởi chạy Server
@@ -104,8 +232,161 @@ npm start
 
 ---
 
-## 🛡️ Cơ chế Bảo mật & Quản lý Phiên Nâng cao
+## 🛡️ Bảo mật & Features Nâng cao
+
+### Security Features
+✅ **JWT Authentication** - Token-based authentication với expiration  
+✅ **XSS Protection** - Sanitize middleware blocks malicious scripts  
+✅ **Rate Limiting** - Anti brute-force (20 req/15min for auth, 300 req/min for API)  
+✅ **Password Hashing** - bcryptjs with salting  
+✅ **Input Validation** - Server-side validation trên tất cả endpoints  
+✅ **Bad Words Filtering** - Content moderation  
+✅ **CORS Whitelisting** - Configurable allowed origins  
+✅ **SQL Injection Prevention** - DynamoDB query parameterization  
+✅ **Session Management** - Multi-device support với force-logout capability  
+
+### Advanced Features
+- **Force Logout**: Admin có thể ngắt kết nối tất cả session của user khi ban account hoặc reset password
+- **Real-time Notifications**: Socket.IO events cho messaging, calls, friend requests
+- **File Handling**: Direct S3 uploads với pre-signed URLs
+- **Message History**: Persistent storage trên DynamoDB
+- **Call Tracking**: Lưu call history với duration, participants
+- **Admin Dashboard**: Real-time statistics, user management
+
+---
+
+## 📊 Database Schema (DynamoDB)
+
+### Users Table
+```javascript
+{
+  username (PK): string,
+  password_hash: string,
+  email: string,
+  phone: string,
+  avatar_url: string,
+  display_name: string,
+  bio: string,
+  created_at: timestamp,
+  updated_at: timestamp,
+  isVerified: boolean,
+  isBanned: boolean,
+  last_seen: timestamp,
+  device_ids: [string],
+  blocked_users: [string]
+}
+```
+
+### Messages Table
+```javascript
+{
+  conversation_id (PK): string,
+  message_id (SK): string,
+  sender_id: string,
+  content: string,
+  attachments: [{ url, type, size }],
+  status: 'sent' | 'delivered' | 'read',
+  created_at: timestamp,
+  is_pinned: boolean,
+  is_recalled: boolean,
+  reactions: { user_id: emoji }
+}
+```
+
+### Calls Table
+```javascript
+{
+  call_id (PK): string,
+  initiator_id: string,
+  recipient_id: string,
+  type: 'audio' | 'video',
+  status: 'ringing' | 'connected' | 'ended' | 'missed',
+  started_at: timestamp,
+  ended_at: timestamp,
+  duration_seconds: number
+}
+```
+
+---
+
+## 🔗 Real-time Communication (Socket.IO)
+
+### Messaging Events
+```javascript
+// Send 1-1 message
+socket.emit('send_message', { receiver_id, content, attachments })
+socket.on('receive_message', (message) => {})
+
+// Typing indicators
+socket.emit('typing_indicator', { recipient_id })
+socket.on('user_typing', (data) => {})
+
+// Group messages
+socket.emit('group_message', { group_id, content })
+socket.on('group_message', (message) => {})
+
+// Friend requests
+socket.on('friend_request', (request_data) => {})
+
+// Force logout
+socket.on('force_logout', () => { window.location.href = '/login' })
+```
+
+### Calling Events (WebRTC)
+```javascript
+// Initiate call
+socket.emit('call_initiate', { recipient_id, call_type: 'video' })
+socket.on('incoming_call', (call_data) => {})
+
+// Answer/Reject
+socket.emit('call_answer', { call_id })
+socket.emit('call_reject', { call_id, reason })
+
+// WebRTC Signaling
+socket.emit('ice_candidate', { call_id, candidate })
+socket.on('ice_candidate', (candidate) => {})`
+
+// Screen sharing
+socket.emit('screen_share', { call_id, enabled: true })
+
+// End call
+socket.emit('call_end', { call_id })
+```
+
+---
+
+## 🧪 Testing API Endpoints
+
+### Using cURL or Postman
+
+**Register**
+```bash
+curl -X POST http://localhost:3001/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "testuser",
+    "email": "test@example.com",
+    "password": "password123"
+  }'
+```
+
+**Login**
+```bash
+curl -X POST http://localhost:3001/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "testuser",
+    "password": "password123"
+  }'
+```
+
+**Get Profile (Authenticated)**
+```bash
+curl -X GET http://localhost:3001/api/users/profile \
+  -H "Authorization: Bearer your_jwt_token_here"
+```
+
+---
 
 > [!IMPORTANT]
-> - **Xác thực Đa tầng**: Toàn bộ các API riêng tư đều được bảo vệ nghiêm ngặt qua `authMiddleware.js`.
-> - **Ngắt kết nối Tức thời (Force Logout)**: Hệ thống được thiết kế để tự động phát tín hiệu ngắt kết nối qua Socket.IO tới các thiết bị mục tiêu ngay khi Quản trị viên thực hiện thao tác **Khóa tài khoản** hoặc **Đặt lại mật khẩu**, đảm bảo chấm dứt quyền truy cập trái phép ngay lập tức mà không cần tải lại trang.
+> **Multi-Device Logout**: Toàn bộ các API riêng tư đều được bảo vệ qua `authMiddleware.js`. Khi admin ban account hoặc reset password, server tự động phát `force_logout` signal qua Socket.IO tới tất cả connected clients, ngắt phiên ngay lập tức mà không cần reload trang.
