@@ -1,5 +1,6 @@
 const presenceStore = require('../store/presenceStore');
 const { sanitizeSocketPayload, sanitizeString } = require('../middlewares/sanitize');
+const fcmService = require('../services/fcmService');
 const CALL_DEBUG_ENABLED = process.env.CALL_DEBUG !== 'false';
 
 // P0: Constants for validation
@@ -64,6 +65,42 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
                 }
             }
 
+            // Check group moderation and permissions
+            if (payload.roomId && payload.roomId.startsWith('group_')) {
+                const { GetCommand } = require("@aws-sdk/lib-dynamodb");
+                const groupData = await docClient.send(new GetCommand({
+                    TableName: 'Groups',
+                    Key: { groupId: payload.roomId }
+                }));
+                if (groupData.Item) {
+                    const group = groupData.Item;
+                    const username = socket.user.username;
+
+                    // 1. Check if group is disabled
+                    if (group.isDisabled) {
+                        socket.emit('error_message', { error: 'Nhóm chat đã bị khóa.' });
+                        return;
+                    }
+
+                    // 2. Check if user is muted in this group
+                    if (group.mutedMembers && group.mutedMembers[username]) {
+                        const muteUntil = group.mutedMembers[username];
+                        if (new Date(muteUntil) > new Date()) {
+                            socket.emit('error_message', { error: 'Bạn đã bị cấm gửi tin nhắn trong nhóm này.' });
+                            return;
+                        }
+                    }
+
+                    // 3. Check if channel mode is enabled (only owner/mods can post)
+                    const isOwner = group.owner === username;
+                    const isMod = (group.mods || []).includes(username);
+                    if (group.isChannel && !isOwner && !isMod) {
+                        socket.emit('error_message', { error: 'Chỉ Admin/Mod mới có thể gửi tin nhắn trong kênh này.' });
+                        return;
+                    }
+                }
+            }
+
             let finalFileData = payload.fileData;
             
             // Nếu có file và đang ở định dạng base64 (data URI)
@@ -95,6 +132,54 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
                 await docClient.send(new PutCommand({ TableName: 'Messages', Item: item }));
             }
             io.emit('receive_message', item);
+
+            // Gửi FCM Push cho user offline
+            (async () => {
+                const roomId = item.roomId;
+                if (!roomId) return;
+
+                const bodyText = item.isSecret 
+                    ? 'Bạn có tin nhắn bí mật mới' 
+                    : (item.text || (item.fileData ? '[Tệp đính kèm]' : 'Tin nhắn mới'));
+
+                if (roomId.startsWith('dm_')) {
+                    const parts = roomId.replace('dm_', '').split('_');
+                    const receiverUsername = parts.find(u => u !== socket.user.username);
+                    if (receiverUsername && !presenceStore.isOnline(receiverUsername)) {
+                        await fcmService.sendPushToUser(receiverUsername, {
+                            title: item.sender || 'Tin nhắn mới',
+                            body: bodyText,
+                        }, {
+                            roomId,
+                            type: 'message',
+                            sender: socket.user.username,
+                            messageId: item.messageId
+                        });
+                    }
+                } else if (roomId.startsWith('group_')) {
+                    const { GetCommand } = require("@aws-sdk/lib-dynamodb");
+                    const groupData = await docClient.send(new GetCommand({
+                        TableName: 'Groups',
+                        Key: { groupId: roomId }
+                    }));
+                    if (groupData.Item) {
+                        const members = groupData.Item.members || [];
+                        const groupName = groupData.Item.groupName || 'Nhóm';
+                        const offlineMembers = members.filter(member => member !== socket.user.username && !presenceStore.isOnline(member));
+                        if (offlineMembers.length > 0) {
+                            await fcmService.sendPushToMultiple(offlineMembers, {
+                                title: `${groupName}: ${item.sender}`,
+                                body: bodyText,
+                            }, {
+                                roomId,
+                                type: 'message',
+                                sender: socket.user.username,
+                                messageId: item.messageId
+                            });
+                        }
+                    }
+                }
+            })().catch(err => console.error('[FCM] Lỗi gửi push socket:', err));
         } catch (error) {
             console.error("Lỗi khi gửi tin nhắn/upload file:", error);
         }

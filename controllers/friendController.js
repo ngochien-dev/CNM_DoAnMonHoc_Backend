@@ -1,6 +1,7 @@
 const docClient = require('../awsConfig');
 const { GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const presenceStore = require('../store/presenceStore');
+const fcmService = require('../services/fcmService');
 
 const requestFriend = async (req, res) => {
   try {
@@ -38,6 +39,18 @@ const requestFriend = async (req, res) => {
 
     req.app.get('io').emit('groups_updated');
     req.app.get('io').emit('new_friend_request', { toUser, fromUser });
+
+    // Gửi FCM Push nếu user nhận offline
+    if (!presenceStore.isOnline(toUser)) {
+        fcmService.sendPushToUser(toUser, {
+            title: 'Lời mời kết bạn mới',
+            body: `${fromUser} đã gửi cho bạn một lời mời kết bạn.`,
+        }, {
+            type: 'friendRequest',
+            sender: fromUser,
+        }).catch(err => console.warn('[FCM] Lỗi gửi push friendRequest:', err.message));
+    }
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json(err);

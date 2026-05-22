@@ -186,7 +186,7 @@ const resolveReport = async (req, res) => {
       return res.status(404).json({ error: "Report not found" });
     }
     const report = reportData.Item;
-    const { messageId, messageSender } = report;
+    const { messageId, messageSender, targetRoomId } = report;
 
     if (action === 'dismiss') {
       await docClient.send(new UpdateCommand({
@@ -197,23 +197,36 @@ const resolveReport = async (req, res) => {
         ExpressionAttributeValues: { ":status": "resolved_dismissed" }
       }));
     } else if (action === 'delete_message') {
-      // 1. Mark message as revoked/deleted in Messages table
-      await docClient.send(new UpdateCommand({
-        TableName: 'Messages',
-        Key: { messageId },
-        UpdateExpression: 'set #t = :txt, isRevoked = :rev, fileData = :f, fileType = :ft',
-        ExpressionAttributeNames: { '#t': 'text' },
-        ExpressionAttributeValues: {
-          ':txt': 'Tin nhắn này đã bị ẩn bởi Admin do vi phạm tiêu chuẩn cộng đồng',
-          ':rev': true,
-          ':f': null,
-          ':ft': null
-        }
-      }));
+      // 1. Mark message as revoked/deleted in Messages table (if messageId exists)
+      if (messageId) {
+        await docClient.send(new UpdateCommand({
+          TableName: 'Messages',
+          Key: { messageId },
+          UpdateExpression: 'set #t = :txt, isRevoked = :rev, fileData = :f, fileType = :ft',
+          ExpressionAttributeNames: { '#t': 'text' },
+          ExpressionAttributeValues: {
+            ':txt': 'Tin nhắn này đã bị ẩn bởi Admin do vi phạm tiêu chuẩn cộng đồng',
+            ':rev': true,
+            ':f': null,
+            ':ft': null
+          }
+        }));
 
-      // 2. Emit real-time revoke to all clients via Socket.io
-      if (req.app.get('io')) {
-        req.app.get('io').emit('message_revoked', messageId);
+        // 2. Emit real-time revoke to all clients via Socket.io
+        if (req.app.get('io')) {
+          req.app.get('io').emit('message_revoked', messageId);
+        }
+      } else if (targetRoomId && targetRoomId.startsWith('group_')) {
+        // Disable the group
+        await docClient.send(new UpdateCommand({
+          TableName: 'Groups',
+          Key: { groupId: targetRoomId },
+          UpdateExpression: "set isDisabled = :d",
+          ExpressionAttributeValues: { ":d": true }
+          }));
+        if (req.app.get('io')) {
+          req.app.get('io').emit('groups_updated');
+        }
       }
 
       // 3. Update report status
@@ -243,23 +256,36 @@ const resolveReport = async (req, res) => {
         }
       }
 
-      // 2. Mark message as revoked/deleted in Messages table
-      await docClient.send(new UpdateCommand({
-        TableName: 'Messages',
-        Key: { messageId },
-        UpdateExpression: 'set #t = :txt, isRevoked = :rev, fileData = :f, fileType = :ft',
-        ExpressionAttributeNames: { '#t': 'text' },
-        ExpressionAttributeValues: {
-          ':txt': 'Tin nhắn này đã bị ẩn bởi Admin do vi phạm tiêu chuẩn cộng đồng',
-          ':rev': true,
-          ':f': null,
-          ':ft': null
-        }
-      }));
+      // 2. Mark message as revoked/deleted in Messages table (if messageId exists)
+      if (messageId) {
+        await docClient.send(new UpdateCommand({
+          TableName: 'Messages',
+          Key: { messageId },
+          UpdateExpression: 'set #t = :txt, isRevoked = :rev, fileData = :f, fileType = :ft',
+          ExpressionAttributeNames: { '#t': 'text' },
+          ExpressionAttributeValues: {
+            ':txt': 'Tin nhắn này đã bị ẩn bởi Admin do vi phạm tiêu chuẩn cộng đồng',
+            ':rev': true,
+            ':f': null,
+            ':ft': null
+          }
+        }));
 
-      // Emit real-time revoke to all clients via Socket.io
-      if (req.app.get('io')) {
-        req.app.get('io').emit('message_revoked', messageId);
+        // Emit real-time revoke to all clients via Socket.io
+        if (req.app.get('io')) {
+          req.app.get('io').emit('message_revoked', messageId);
+        }
+      } else if (targetRoomId && targetRoomId.startsWith('group_')) {
+        // Disable the group
+        await docClient.send(new UpdateCommand({
+          TableName: 'Groups',
+          Key: { groupId: targetRoomId },
+          UpdateExpression: "set isDisabled = :d",
+          ExpressionAttributeValues: { ":d": true }
+        }));
+        if (req.app.get('io')) {
+          req.app.get('io').emit('groups_updated');
+        }
       }
 
       // 3. Update report status
