@@ -213,12 +213,30 @@ exports.searchEditedMessages = async ({ content, channelId }) => {
 // Search pinned messages (đã ghim)
 exports.searchPinnedMessages = async (channelId) => {
   try {
-    let filter = ['pinned = :pinned'];
-    let values = { ':pinned': true };
+    let filter = ['isPinned = :pinned AND isRevoked <> :true'];
+    let values = { ':pinned': true, ':true': true };
 
     if (channelId) {
-      filter.push('channelId = :channelId');
-      values[':channelId'] = channelId;
+      if (channelId.startsWith('dm_')) {
+          const parts = channelId.replace('dm_', '').split('_');
+          if (parts.length === 2) {
+              const altRoomId = `dm_${parts[1]}_${parts[0]}`;
+              if (altRoomId !== channelId) {
+                  filter.push('(roomId = :r1 OR roomId = :r2)');
+                  values[':r1'] = channelId;
+                  values[':r2'] = altRoomId;
+              } else {
+                  filter.push('roomId = :roomId');
+                  values[':roomId'] = channelId;
+              }
+          } else {
+              filter.push('roomId = :roomId');
+              values[':roomId'] = channelId;
+          }
+      } else {
+          filter.push('roomId = :roomId');
+          values[':roomId'] = channelId;
+      }
     }
 
     const params = {
@@ -238,15 +256,15 @@ exports.searchPinnedMessages = async (channelId) => {
 exports.convertToSearchResponse = (messages) => {
   return messages.map(message => ({
     messageId: message.messageId || message.id,
-    content: message.content,
-    sentAt: message.sentAt || message.createdAt,
+    content: message.content || message.text,
+    sentAt: message.sentAt || message.createdAt || message.time,
     editedAt: message.editedAt || null,
     senderId: message.senderId || message.senderUsername,
     senderName: message.senderName || message.senderUsername,
     channelId: message.channelId || message.roomId,
     channelName: message.channelName || 'General',
-    attachmentCount: (message.attachments ? message.attachments.length : 0),
-    hasAttachments: message.attachments ? message.attachments.length > 0 : false,
-    pinned: message.pinned || false
+    attachmentCount: (message.attachments ? message.attachments.length : (message.fileData ? 1 : 0)),
+    hasAttachments: message.attachments ? message.attachments.length > 0 : !!message.fileData,
+    pinned: message.pinned || message.isPinned || false
   }));
 };
