@@ -1,6 +1,7 @@
 const socketAuth = require('../middlewares/socketAuth');
 const registerChatSocket = require('./chatSocket');
 const registerCallSocket = require('./callSocket');
+const registerGroupCallSocket = require('./groupCallSocket');
 const docClient = require('../awsConfig');
 
 const presenceStore = require('../store/presenceStore');
@@ -54,6 +55,7 @@ module.exports = function configureSockets(io) {
         // Register feature-specific sockets
         registerChatSocket({ io, socket, docClient });
         registerCallSocket({ io, socket });
+        registerGroupCallSocket({ io, socket });
 
         // Add additional catch-all or global disconnect logic if needed
     });
