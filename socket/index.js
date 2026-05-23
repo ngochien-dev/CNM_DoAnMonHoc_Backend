@@ -1,6 +1,7 @@
 const socketAuth = require('../middlewares/socketAuth');
 const registerChatSocket = require('./chatSocket');
 const registerCallSocket = require('./callSocket');
+const registerGroupCallSocket = require('./groupCallSocket');
 const docClient = require('../awsConfig');
 
 const presenceStore = require('../store/presenceStore');
@@ -41,6 +42,13 @@ module.exports = function configureSockets(io) {
         
         // Đăng ký connection vào presenceStore
         presenceStore.registerConnection(socket.user, socket.id);
+        console.log('[SocketAuth] connected user mapped', {
+            username: socket.user.username,
+            socketId: socket.id,
+            sessionId: socket.sessionId || null,
+            totalSocketsForUser: presenceStore.getConnectionCount(socket.user.username),
+            onlineUsersCount: presenceStore.getOnlineCount()
+        });
         debugSocket('User registered online.', {
             username: socket.user.username,
             socketId: socket.id,
@@ -54,6 +62,7 @@ module.exports = function configureSockets(io) {
         // Register feature-specific sockets
         registerChatSocket({ io, socket, docClient });
         registerCallSocket({ io, socket });
+        registerGroupCallSocket({ io, socket });
 
         // Add additional catch-all or global disconnect logic if needed
     });
