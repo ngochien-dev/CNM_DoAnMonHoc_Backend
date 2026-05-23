@@ -12,34 +12,94 @@ const getStats = async (req, res) => {
     const messages = messagesData.Items || [];
     const groups = groupsData.Items || [];
 
-    const groupDict = {
-      chung: 'Kênh Chung'
-    };
+    // 1. User stats
+    const totalUsers = users.length;
+    const bannedUsers = users.filter(u => u.isBanned).length;
+    const activeUsers = totalUsers - bannedUsers;
 
-    groups.forEach(g => {
-      groupDict[g.groupId] = g.groupName;
-    });
+    // 2. Data Distribution (File Types vs Text vs Polls)
+    let textCount = 0;
+    let imageCount = 0;
+    let videoCount = 0;
+    let fileCount = 0;
+    let pollCount = 0;
 
-    const statsMap = {};
-    messages.forEach(m => {
-      const rId = m.roomId || 'chung';
-      if (groupDict[rId] || rId.startsWith('dm_')) {
-        const rName = groupDict[rId] || 'Chat Riêng';
-        statsMap[rName] = (statsMap[rName] || 0) + 1;
+    // 3. Temporal Data (Messages per day/month based on range)
+    const rangeParam = req.query.range ? parseInt(req.query.range) : 7;
+    const isMonthly = rangeParam > 30;
+    
+    // Initialize temporal map
+    const temporalMap = {};
+    if (isMonthly) {
+      const months = rangeParam === 180 ? 6 : 12;
+      for (let i = months - 1; i >= 0; i--) {
+        const d = new Date();
+        d.setMonth(d.getMonth() - i);
+        const dateStr = d.toLocaleDateString('vi-VN', { month: '2-digit', year: 'numeric' });
+        temporalMap[dateStr] = 0;
       }
-    });
+    } else {
+      for (let i = rangeParam - 1; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+        temporalMap[dateStr] = 0;
+      }
+    }
 
-    const chartData = Object.keys(statsMap).map(name => ({
-      name,
-      value: statsMap[name]
-    }));
+    const cutoffDate = new Date();
+    if (isMonthly) {
+        cutoffDate.setMonth(cutoffDate.getMonth() - (rangeParam === 180 ? 6 : 12));
+    } else {
+        cutoffDate.setDate(cutoffDate.getDate() - rangeParam);
+    }
 
     const userActivity = {};
+
     messages.forEach(m => {
+      // Data Distribution
+      if (m.msgType === 'poll') {
+        pollCount++;
+      } else if (m.fileType) {
+        if (m.fileType.startsWith('image/')) imageCount++;
+        else if (m.fileType.startsWith('video/')) videoCount++;
+        else fileCount++;
+      } else {
+        textCount++;
+      }
+
+      // Temporal Data
+      if (m.createdAt) {
+        const d = new Date(m.createdAt);
+        if (d >= cutoffDate) {
+          const dateStr = isMonthly 
+            ? d.toLocaleDateString('vi-VN', { month: '2-digit', year: 'numeric' })
+            : d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+          if (temporalMap[dateStr] !== undefined) {
+            temporalMap[dateStr]++;
+          }
+        }
+      }
+
+      // User Activity
       userActivity[m.senderUsername] = (userActivity[m.senderUsername] || 0) + 1;
     });
 
-    const topUsers = Object.keys(userActivity)
+    const chartData = [
+      { name: 'Văn bản', value: textCount },
+      { name: 'Hình ảnh', value: imageCount },
+      { name: 'Video', value: videoCount },
+      { name: 'Tài liệu', value: fileCount },
+      { name: 'Bình chọn', value: pollCount }
+    ].filter(item => item.value > 0);
+
+    const activityChartData = Object.keys(temporalMap).map(date => ({
+      date,
+      messages: temporalMap[date]
+    }));
+
+    // Top Users & maxCount
+    const sortedUsers = Object.keys(userActivity)
       .map(username => {
         const uInfo = users.find(u => u.username === username);
         return {
@@ -47,20 +107,24 @@ const getStats = async (req, res) => {
           count: userActivity[username]
         };
       })
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
+      .sort((a, b) => b.count - a.count);
+    
+    const topUsers = sortedUsers.slice(0, 5);
+    const topUserMaxCount = topUsers.length > 0 ? topUsers[0].count : 1;
 
-    // Using presenceStore to get online count if needed, or io instance.
-    // For now, since onlineNow was getting length of onlineUsers, we can return a placeholder or get it.
     const presenceStore = require('../store/presenceStore');
 
     res.json({
-      totalUsers: users.length,
+      totalUsers,
+      activeUsers,
+      bannedUsers,
       totalMessages: messages.length,
-      onlineNow: presenceStore.getOnlineUsers().length,
+      onlineNow: presenceStore.getOnlineCount(),
       totalGroups: groups.length,
       chartData,
-      topUsers
+      activityChartData,
+      topUsers,
+      topUserMaxCount
     });
   } catch (err) {
     console.error(err);

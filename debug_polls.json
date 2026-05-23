@@ -1,0 +1,70 @@
+[
+  {
+    "sender": "Ngọc Hiền 140604",
+    "msgType": "poll",
+    "pollData": {
+      "question": "anbc",
+      "options": [
+        {
+          "votes": [
+            "ngochien140604"
+          ],
+          "text": "1"
+        },
+        {
+          "votes": [],
+          "text": "2"
+        }
+      ]
+    },
+    "messageId": "1779323525636",
+    "readBy": [
+      "ngochien140604",
+      "nguyenhien140604"
+    ],
+    "deliveredTo": [
+      "ngochien140604",
+      "nguyenhien140604"
+    ],
+    "createdAt": "2026-05-21T00:32:05.636Z",
+    "roomId": "dm_ngochien140604_nguyenhien140604",
+    "text": "Bình chọn mới: anbc",
+    "time": "07:32 AM",
+    "senderUsername": "ngochien140604",
+    "isRevoked": false
+  },
+  {
+    "sender": "Ngọc Hiền 140604",
+    "msgType": "poll",
+    "pollData": {
+      "question": "12321",
+      "options": [
+        {
+          "votes": [
+            "ngochien140604"
+          ],
+          "text": "123"
+        },
+        {
+          "votes": [],
+          "text": "12323"
+        }
+      ]
+    },
+    "messageId": "1779436272433",
+    "readBy": [
+      "ngochien140604",
+      "nguyenhien140604"
+    ],
+    "deliveredTo": [
+      "ngochien140604",
+      "nguyenhien140604"
+    ],
+    "createdAt": "2026-05-22T07:51:12.433Z",
+    "roomId": "dm_ngochien140604_nguyenhien140604",
+    "text": "Bình chọn mới: 12321",
+    "time": "02:51 PM",
+    "senderUsername": "ngochien140604",
+    "isRevoked": false
+  }
+]
