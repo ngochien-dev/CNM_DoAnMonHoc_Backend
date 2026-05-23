@@ -354,12 +354,20 @@ module.exports = function registerChatSocket({ io, socket, docClient }) {
 
     socket.on('disconnect', (reason) => {
         const removal = presenceStore.removeConnection(socket.id);
+        const username = removal?.username || socket.user?.username;
+        console.log('[SocketAuth] disconnected user unmapped', {
+            username,
+            socketId: socket.id,
+            reason,
+            remainingSocketsForUser: presenceStore.getConnectionCount(username),
+            onlineUsersCount: presenceStore.getOnlineCount()
+        });
         debugSocket('User socket disconnected and presence updated.', {
-            username: removal?.username || socket.user.username,
+            username: username,
             socketId: socket.id,
             reason,
             stillOnline: Boolean(removal?.stillOnline),
-            connectionCount: presenceStore.getConnectionCount(socket.user.username),
+            connectionCount: presenceStore.getConnectionCount(username),
             onlineUsersSize: presenceStore.getOnlineCount(),
             onlineUsernames: presenceStore.getOnlineUsernames(),
         });

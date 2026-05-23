@@ -42,6 +42,13 @@ module.exports = function configureSockets(io) {
         
         // Đăng ký connection vào presenceStore
         presenceStore.registerConnection(socket.user, socket.id);
+        console.log('[SocketAuth] connected user mapped', {
+            username: socket.user.username,
+            socketId: socket.id,
+            sessionId: socket.sessionId || null,
+            totalSocketsForUser: presenceStore.getConnectionCount(socket.user.username),
+            onlineUsersCount: presenceStore.getOnlineCount()
+        });
         debugSocket('User registered online.', {
             username: socket.user.username,
             socketId: socket.id,

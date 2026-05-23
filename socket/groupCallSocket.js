@@ -200,7 +200,32 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
 
     try {
       const groupId = payload.groupId;
-      const invitedParticipants = normalizeParticipants(payload.participants);
+
+      // Normalize receivers: ưu tiên theo thứ tự invitedParticipants → participants → targetUsernames → participantUsernames → calleeUsernames → members
+      const rawReceivers =
+        payload.invitedParticipants ||
+        payload.participants ||
+        payload.targetUsernames ||
+        payload.participantUsernames ||
+        payload.calleeUsernames ||
+        payload.members ||
+        [];
+
+      const invitedParticipants = normalizeParticipants(rawReceivers);
+
+      console.log('[GroupCallSocket] start received', {
+        socketId: socket.id,
+        callerUsername: creatorUsername,
+        groupId: payload.groupId,
+        rawPayload: {
+          participants: payload.participants,
+          invitedParticipants: payload.invitedParticipants,
+          members: payload.members,
+          targetUsernames: payload.targetUsernames,
+          participantUsernames: payload.participantUsernames,
+          calleeUsernames: payload.calleeUsernames,
+        },
+      });
 
       debug('Received group-call:start', {
         from: creatorUsername,
@@ -222,6 +247,26 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
 
       const call = result.data;
 
+      const inviteTargets = invitedParticipants.filter(
+        (username) => username && username !== creatorUsername
+      );
+
+      console.log('[GroupCallSocket] start normalized receivers', {
+        callerUsername: creatorUsername,
+        groupId,
+        receiverUsernames: inviteTargets,
+        excludedCaller: creatorUsername,
+        onlineUsers: presenceStore.getOnlineUsernames(),
+      });
+
+      console.log('[GroupCallSocket] call created', {
+        callId: call.callId,
+        groupId: call.groupId,
+        callerUsername: call.creatorUsername,
+        participants: call.participants,
+        invitedUsernames: inviteTargets,
+      });
+
       socket.emit(GROUP_CALL_EVENTS.started, {
         callId: call.callId,
         groupId: call.groupId,
@@ -229,17 +274,44 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         participants: call.participants,
       });
 
-      const inviteTargets = invitedParticipants.filter(
-        (username) => username && username !== creatorUsername
-      );
-
       inviteTargets.forEach((username) => {
+        const receiverSocketIds = presenceStore.getSocketIds(username);
+        const receiverOnline = presenceStore.isOnline(username);
+
+        if (!receiverOnline || receiverSocketIds.length === 0) {
+          console.warn('[GroupCallSocket] receiver socket not found', {
+            receiverUsername: username,
+            knownOnlineUsers: presenceStore.getOnlineUsernames(),
+            callId: call.callId,
+            groupId: call.groupId,
+          });
+        } else {
+          console.log('[GroupCallSocket] emit incoming', {
+            receiverUsername: username,
+            receiverSocketIds,
+            receiverOnline,
+            eventName: 'group-call:incoming',
+            callId: call.callId,
+            groupId: call.groupId,
+            callerUsername: creatorUsername,
+          });
+        }
+
         emitToUser(io, username, GROUP_CALL_EVENTS.incoming, {
           callId: call.callId,
           groupId: call.groupId,
-          creatorUsername,
-          participants: invitedParticipants,
-          call,
+          callerUsername: creatorUsername,
+          fromUsername: creatorUsername,
+          createdBy: creatorUsername,
+          participants: inviteTargets,
+          call: {
+            callId: call.callId,
+            groupId: call.groupId,
+            createdBy: creatorUsername,
+            creatorUsername,
+            participants: call.participants,
+          },
+          activeGroupCall: call,
         });
       });
 
