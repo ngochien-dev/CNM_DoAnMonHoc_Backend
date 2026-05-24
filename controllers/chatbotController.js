@@ -1,14 +1,144 @@
 const { GoogleGenAI } = require("@google/genai");
+const aiAgentService = require('../services/aiAgentService');
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-exports.chatWithGemini = async (req, res) => {
-  try {
-    console.log('Received chatbot request:', JSON.stringify(req.body, null, 2));
-    const { messages, agent } = req.body;
+// ─── Gemini Function Calling — Tool Declarations ────────────────────────────
+const IN_CHAT_TOOLS = [
+  {
+    functionDeclarations: [
+      {
+        name: "summarize_conversation",
+        description: "Tóm tắt hội thoại gần đây trong phòng chat hiện tại. Sử dụng khi người dùng muốn biết có gì mới, bỏ lỡ gì, hoặc yêu cầu tóm tắt cuộc trò chuyện.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            messageCount: {
+              type: "INTEGER",
+              description: "Số lượng tin nhắn gần nhất muốn tóm tắt. Mặc định 20, tối đa 50."
+            },
+            sinceMinutes: {
+              type: "INTEGER",
+              description: "Tóm tắt tin nhắn trong N phút gần nhất. Ví dụ: 30 = 30 phút qua."
+            }
+          }
+        }
+      },
+      {
+        name: "search_messages",
+        description: "Tìm kiếm tin nhắn theo nội dung, người gửi, hoặc khoảng thời gian trong phòng chat hiện tại. Sử dụng khi người dùng muốn tìm lại tin nhắn cụ thể.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            query: {
+              type: "STRING",
+              description: "Từ khóa nội dung cần tìm trong tin nhắn."
+            },
+            senderName: {
+              type: "STRING",
+              description: "Tên người gửi (username hoặc displayName) cần lọc."
+            },
+            dateRange: {
+              type: "OBJECT",
+              description: "Khoảng thời gian cần lọc.",
+              properties: {
+                before: {
+                  type: "STRING",
+                  description: "Tìm tin nhắn trước ngày này. Định dạng ISO: YYYY-MM-DD."
+                },
+                after: {
+                  type: "STRING",
+                  description: "Tìm tin nhắn sau ngày này. Định dạng ISO: YYYY-MM-DD."
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        name: "suggest_smart_replies",
+        description: "Gợi ý 3-5 câu trả lời nhanh phù hợp dựa trên ngữ cảnh cuộc trò chuyện gần nhất. Sử dụng khi người dùng hỏi 'gợi ý reply', 'nên trả lời gì', hoặc cần ý tưởng phản hồi.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            count: {
+              type: "INTEGER",
+              description: "Số lượng gợi ý mong muốn (3-5). Mặc định 4."
+            }
+          }
+        }
+      },
+      {
+        name: "writing_assistant",
+        description: "Công cụ hỗ trợ viết tin nhắn: chỉnh sửa văn phong (lịch sự, chuyên nghiệp), sửa lỗi chính tả/ngữ pháp, hoặc dịch thuật sang ngôn ngữ khác. Sử dụng khi người dùng muốn sửa/chỉnh/dịch một đoạn text.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            action: {
+              type: "STRING",
+              description: "Loại hành động: 'polite' (lịch sự hơn), 'professional' (chuyên nghiệp), 'fix_grammar' (sửa lỗi chính tả/ngữ pháp), 'translate' (dịch thuật), 'casual' (thân thiện)."
+            },
+            text: {
+              type: "STRING",
+              description: "Đoạn văn bản cần xử lý."
+            },
+            targetLanguage: {
+              type: "STRING",
+              description: "Ngôn ngữ đích khi action='translate'. Ví dụ: 'English', 'Japanese', 'Korean', 'Vietnamese'."
+            }
+          },
+          required: ["action", "text"]
+        }
+      },
+      {
+        name: "process_content",
+        description: "Xử lý nội dung media và link: tóm tắt link bài báo/tài liệu, hoặc chuyển đổi hình ảnh chụp tài liệu/bảng trắng thành văn bản (OCR). Sử dụng khi người dùng gửi link muốn tóm tắt hoặc gửi ảnh muốn trích xuất text.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            action: {
+              type: "STRING",
+              description: "Loại xử lý: 'summarize_link' (tóm tắt link), 'ocr_image' (trích xuất text từ ảnh)."
+            },
+            url: {
+              type: "STRING",
+              description: "URL cần tóm tắt (khi action='summarize_link')."
+            },
+            imageData: {
+              type: "STRING",
+              description: "Base64 data hoặc URL của ảnh cần OCR (khi action='ocr_image')."
+            }
+          },
+          required: ["action"]
+        }
+      }
+    ]
+  }
+];
 
-    let systemInstruction = "Bạn là một trợ lý ảo thông minh và thân thiện.";
-    if (agent === 'ott') {
-      systemInstruction = `Bạn là "Trợ lý Hệ thống OTT" - một AI đồng hành thông minh được tích hợp sẵn trong ứng dụng OTT Chat & Collaboration Platform (phát triển bởi đội ngũ ngochien140604).
+// ─── System Instructions ────────────────────────────────────────────────────
+const IN_CHAT_SYSTEM_INSTRUCTION = `Bạn là "Trợ lý AI OTT" — một AI Agent thông minh được tích hợp trực tiếp vào khung hội thoại của ứng dụng OTT Chat.
+
+NHIỆM VỤ CHÍNH:
+- Bạn có quyền truy cập lịch sử tin nhắn của phòng chat hiện tại thông qua các tool function.
+- Khi người dùng yêu cầu TÓM TẮT, TÌM KIẾM, GỢI Ý PHẢN HỒI, SỬA VĂN PHONG, DỊCH THUẬT, TÓM TẮT LINK, hoặc OCR → Hãy GỌI TOOL tương ứng.
+- Khi người dùng hỏi đáp thông thường, trò chuyện, hoặc hỏi về tính năng ứng dụng → Trả lời trực tiếp KHÔNG gọi tool.
+
+QUY TẮC:
+1. Luôn trả lời bằng tiếng Việt, ngắn gọn, rõ ràng.
+2. Khi gọi tool thành công, hãy tổng hợp kết quả thành câu trả lời tự nhiên, dễ hiểu.
+3. Khi tóm tắt hội thoại, hãy liệt kê các chủ đề chính và đề xuất quan trọng.
+4. Khi tìm kiếm tin nhắn, hãy format kết quả rõ ràng với thời gian và người gửi.
+5. Khi gợi ý smart replies, hãy đưa ra 3-5 câu ngắn gọn, phù hợp ngữ cảnh.
+6. Khi sửa văn phong/dịch, hãy trả về cả bản gốc và bản đã sửa/dịch.
+7. Xưng là "Trợ lý AI" hoặc "Tôi".
+
+THÔNG TIN ỨNG DỤNG:
+- Tên: OTT Chat & Collaboration Platform
+- Tính năng: Chat cá nhân/nhóm, E2EE, Secret Chat, Video Call, Cloud Drive, Bảng tin, Game Center, Todo List.`;
+
+// ─── Agent-specific system instructions (existing behavior) ─────────────────
+const AGENT_INSTRUCTIONS = {
+  ott: `Bạn là "Trợ lý Hệ thống OTT" - một AI đồng hành thông minh được tích hợp sẵn trong ứng dụng OTT Chat & Collaboration Platform (phát triển bởi đội ngũ ngochien140604).
 Nhiệm vụ của bạn là giải đáp, hướng dẫn người dùng sử dụng toàn bộ các tính năng của ứng dụng này một cách chi tiết, cụ thể và chuyên nghiệp bằng tiếng Việt.
 
 Thông tin chi tiết về ứng dụng:
@@ -27,41 +157,195 @@ Thông tin chi tiết về ứng dụng:
    - Bảo mật 2FA & Session Control: Hỗ trợ xác thực 2 lớp. Xem danh sách các phiên đăng nhập hoạt động và nhấn nút Đăng xuất từ xa để hủy phiên đáng ngờ.
    - Admin Panel: Cho phép Admin xem thống kê hệ thống, quản lý người dùng (khóa/mở khóa tài khoản, reset mật khẩu).
 
-Hãy trả lời ngắn gọn, lịch sự, chuyên nghiệp. Xưng là "Trợ lý OTT" hoặc "Tôi". Trả lời có cấu trúc và Markdown nếu cần.`;
-    } else if (agent === 'coder') {
-      systemInstruction = "Bạn là một chuyên gia lập trình phần mềm cấp cao. Hãy giải thích và viết code sạch, tối ưu bằng Markdown tiếng Việt.";
-    } else if (agent === 'translator') {
-      systemInstruction = "Bạn là một dịch thuật viên chuyên nghiệp. Hãy dịch các đoạn văn bản chính xác, tự nhiên giữa các ngôn ngữ và giải thích nếu cần.";
-    } else if (agent === 'writer') {
-      systemInstruction = "Bạn là một nhà sáng tạo nội dung chuyên nghiệp. Hãy viết bài viết sáng tạo, email, kịch bản, sửa văn phong tiếng Việt cuốn hút.";
-    } else if (agent === 'health') {
-      systemInstruction = "Bạn là một chuyên gia tư vấn sức khỏe và phong cách sống lành mạnh. Đưa ra lời khuyên khoa học về dinh dưỡng và sinh hoạt bằng tiếng Việt (luôn ghi chú lời khuyên này không thay thế chẩn đoán y tế).";
+Hãy trả lời ngắn gọn, lịch sự, chuyên nghiệp. Xưng là "Trợ lý OTT" hoặc "Tôi". Trả lời có cấu trúc và Markdown nếu cần.`,
+  coder: "Bạn là một chuyên gia lập trình phần mềm cấp cao. Hãy giải thích và viết code sạch, tối ưu bằng Markdown tiếng Việt.",
+  translator: "Bạn là một dịch thuật viên chuyên nghiệp. Hãy dịch các đoạn văn bản chính xác, tự nhiên giữa các ngôn ngữ và giải thích nếu cần.",
+  writer: "Bạn là một nhà sáng tạo nội dung chuyên nghiệp. Hãy viết bài viết sáng tạo, email, kịch bản, sửa văn phong tiếng Việt cuốn hút.",
+  health: "Bạn là một chuyên gia tư vấn sức khỏe và phong cách sống lành mạnh. Đưa ra lời khuyên khoa học về dinh dưỡng và sinh hoạt bằng tiếng Việt (luôn ghi chú lời khuyên này không thay thế chẩn đoán y tế).",
+};
+
+// ─── Execute Tool Function ──────────────────────────────────────────────────
+async function executeToolFunction(functionCall, roomId) {
+  const { name, args } = functionCall;
+  
+  switch (name) {
+    case 'summarize_conversation':
+      return await aiAgentService.summarizeConversation({
+        roomId,
+        messageCount: args.messageCount || 20,
+        sinceMinutes: args.sinceMinutes,
+      });
+
+    case 'search_messages':
+      return await aiAgentService.searchMessages({
+        roomId,
+        query: args.query,
+        senderName: args.senderName,
+        dateRange: args.dateRange,
+      });
+
+    case 'suggest_smart_replies':
+      return await aiAgentService.suggestSmartReplies({
+        roomId,
+        count: args.count || 4,
+      });
+
+    case 'writing_assistant':
+      return await aiAgentService.writingAssistant({
+        action: args.action,
+        text: args.text,
+        targetLanguage: args.targetLanguage,
+      });
+
+    case 'process_content':
+      if (args.action === 'summarize_link' && args.url) {
+        return await aiAgentService.summarizeLink({ url: args.url });
+      }
+      if (args.action === 'ocr_image' && args.imageData) {
+        return await aiAgentService.ocrImage({ imageData: args.imageData });
+      }
+      return { error: 'Missing required parameters for process_content' };
+
+    default:
+      return { error: `Unknown tool: ${name}` };
+  }
+}
+
+// ─── Main Controller ────────────────────────────────────────────────────────
+exports.chatWithGemini = async (req, res) => {
+  try {
+    const { messages, agent, roomId } = req.body;
+
+    // ─── Determine mode: in-chat agent vs standalone agents ─────────────────
+    const isInChatAgent = agent === 'in-chat';
+
+    // Pick system instruction
+    let systemInstruction = "Bạn là một trợ lý ảo thông minh và thân thiện.";
+    if (isInChatAgent) {
+      systemInstruction = IN_CHAT_SYSTEM_INSTRUCTION;
+    } else if (AGENT_INSTRUCTIONS[agent]) {
+      systemInstruction = AGENT_INSTRUCTIONS[agent];
     }
 
-    // Chuyển đổi roles: system/user -> user, assistant -> model
-    // Đảm bảo tin nhắn đầu tiên luôn là 'user'
-    const contents = messages.map((msg, idx) => ({
-      role: (msg.role === 'assistant') ? 'model' : 'user',
-      parts: [{ text: msg.content }]
+    // Convert message roles: system/user → user, assistant → model
+    const contents = messages.map((msg) => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }],
     }));
 
-    // Nếu tin nhắn đầu là model (do system convert sang), ta đổi nó thành user
+    // Ensure first message has role 'user'
     if (contents.length > 0 && contents[0].role === 'model') {
       contents[0].role = 'user';
     }
 
+    // ─── In-Chat Agent: Use Function Calling ────────────────────────────────
+    if (isInChatAgent) {
+      const result = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents,
+        config: { 
+          systemInstruction,
+          tools: IN_CHAT_TOOLS 
+        },
+      });
+
+      // Check if Gemini wants to call a function
+      const candidate = result.candidates?.[0];
+      const parts = candidate?.content?.parts || [];
+      const functionCallPart = parts.find(p => p.functionCall);
+
+      if (functionCallPart) {
+        // ─── AGENT MODE: Execute tool and synthesize response ───────────────
+        const { functionCall } = functionCallPart;
+        console.log(`[AI Agent] Function call: ${functionCall.name}`, functionCall.args);
+
+        const toolResult = await executeToolFunction(functionCall, roomId);
+        console.log(`[AI Agent] Tool result keys:`, Object.keys(toolResult));
+
+        // Send tool result back to Gemini for natural language synthesis
+        const functionResponseContents = [
+          ...contents,
+          { role: 'model', parts: [{ functionCall }] },
+          {
+            role: 'user',
+            parts: [{
+              functionResponse: {
+                name: functionCall.name,
+                response: toolResult,
+              }
+            }]
+          }
+        ];
+
+        const finalResult = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: functionResponseContents,
+          config: { 
+            systemInstruction,
+            tools: IN_CHAT_TOOLS 
+          },
+        });
+
+        const reply = finalResult.text || 'Đã thực hiện xong nhưng không có kết quả cụ thể.';
+
+        // Build smart replies if the tool was suggest_smart_replies
+        let smartReplies = null;
+        if (functionCall.name === 'suggest_smart_replies' && toolResult.recentMessages) {
+          // Gemini already synthesized replies in the text, but we also try to parse them
+          smartReplies = extractSmartReplies(reply);
+        }
+
+        return res.json({
+          reply,
+          mode: 'agent',
+          tool: functionCall.name,
+          toolData: toolResult,
+          smartReplies,
+        });
+      } else {
+        // ─── CHATBOT MODE: Direct text response ────────────────────────────
+        const reply = result.text || 'Xin lỗi, tôi chưa có câu trả lời.';
+        return res.json({
+          reply,
+          mode: 'chatbot',
+        });
+      }
+    }
+
+    // ─── Standalone Agents (existing behavior — no function calling) ────────
     const result = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents,
-      config: {
-        systemInstruction
-      }
+      config: { systemInstruction },
     });
 
     const reply = result.text || 'Xin lỗi, tôi chưa có câu trả lời.';
     res.json({ reply });
+
   } catch (err) {
     console.error('Gemini API error:', err?.response?.data || err.message || err);
-    res.status(500).json({ reply: 'Xin lỗi, có lỗi xảy ra khi kết nối AI. Lỗi: ' + (err.message || 'Unknown') });
+    res.status(500).json({
+      reply: 'Xin lỗi, có lỗi xảy ra khi kết nối AI. Lỗi: ' + (err.message || 'Unknown'),
+      mode: 'error',
+    });
   }
 };
+
+// ─── Helper: Extract smart reply options from Gemini text ───────────────────
+function extractSmartReplies(text) {
+  if (!text) return null;
+  // Try to parse numbered list or bullet points from Gemini response
+  const lines = text.split('\n').filter(l => l.trim());
+  const replies = [];
+  for (const line of lines) {
+    // Match patterns like: 1. "OK, anh!" or - "Được rồi" or • Reply text
+    const match = line.match(/(?:^[\d]+[.)]\s*|^[-•*]\s*)[""]?(.+?)[""]?\s*$/);
+    if (match && match[1].length < 100) {
+      const clean = match[1].replace(/^[""\s]+|[""\s]+$/g, '').trim();
+      if (clean.length > 0 && clean.length < 80) {
+        replies.push(clean);
+      }
+    }
+  }
+  return replies.length >= 2 ? replies.slice(0, 5) : null;
+}
