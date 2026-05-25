@@ -349,3 +349,28 @@ function extractSmartReplies(text) {
   }
   return replies.length >= 2 ? replies.slice(0, 5) : null;
 }
+
+// ─── Summarize Chat (Direct) ────────────────────────────────────────────────
+exports.summarizeChat = async (req, res) => {
+  try {
+    const { chatText } = req.body;
+    
+    if (!chatText) {
+      return res.status(400).json({ error: 'Missing chat text' });
+    }
+
+    const systemInstruction = "Bạn là Trợ lý AI OTT. Dưới đây là một đoạn lịch sử trò chuyện. Hãy tóm tắt nội dung chính, các chủ đề quan trọng hoặc quyết định được đưa ra một cách ngắn gọn, súc tích (khoảng 3-4 câu) bằng tiếng Việt thân thiện.";
+    
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{ role: 'user', parts: [{ text: chatText }] }],
+      config: { systemInstruction },
+    });
+
+    const summary = result.text || 'Không thể tóm tắt đoạn hội thoại này.';
+    res.json({ summary });
+  } catch (err) {
+    console.error('Gemini Summarize API error:', err?.response?.data || err.message || err);
+    res.status(500).json({ error: 'Lỗi khi kết nối với AI' });
+  }
+};
