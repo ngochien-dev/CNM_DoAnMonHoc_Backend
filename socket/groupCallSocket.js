@@ -822,4 +822,50 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
     }
   });
-};
+
+  // ── Group Screen Share UI events (chỉ để báo UI, không ảnh hưởng WebRTC) ──
+
+  function handleGroupScreenShareEvent(isSharing) {
+    return (payload = {}) => {
+      const username = getSocketUsername(socket);
+      const { callId, groupId } = payload;
+
+      try {
+        if (!callId) {
+          warn(`group screen-share event ignored: missing callId`, { username });
+          return;
+        }
+
+        if (!isUserInCall(callId, username)) {
+          warn('group screen-share rejected: sender not in call', { callId, username });
+          return;
+        }
+
+        const participantsResult = groupCallService.getParticipants(callId);
+        if (!participantsResult.ok) return;
+
+        const eventName = isSharing ? 'group-call:screen-share-started' : 'group-call:screen-share-stopped';
+
+        emitToParticipants(
+          io,
+          participantsResult.data,
+          eventName,
+          {
+            callId,
+            groupId: groupId || null,
+            username,
+            isScreenSharing: isSharing,
+          },
+          username
+        );
+
+        debug(`${eventName} broadcast`, { callId, username, isSharing });
+      } catch (error) {
+        errorLog(`group screen-share event failed`, error, { username, callId });
+      }
+    };
+  }
+
+  socket.on('group-call:screen-share-started', handleGroupScreenShareEvent(true));
+  socket.on('group-call:screen-share-stopped', handleGroupScreenShareEvent(false));
+};

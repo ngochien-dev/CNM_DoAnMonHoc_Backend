@@ -721,4 +721,54 @@ module.exports = function registerCallSocket({ io, socket }) {
             });
         }
     });
+
+    // ── Screen Share UI events (chỉ để báo UI, không ảnh hưởng WebRTC) ────────
+
+    function handleScreenShareEvent(eventName, isSharing) {
+        return ({ callId } = {}) => {
+            try {
+                if (!callId) {
+                    logSocket(`Ignored ${eventName}: missing callId.`, { from: socket.user.username });
+                    return;
+                }
+
+                const relayCheck = CallService.canRelaySignaling({
+                    callId,
+                    username: socket.user.username,
+                });
+
+                if (!relayCheck.ok) {
+                    warnCall(`${eventName} rejected`, {
+                        callId,
+                        from: socket.user.username,
+                        status: relayCheck.status,
+                    });
+                    return;
+                }
+
+                const targetUsername = CallService.getPeerUsername(relayCheck.call, socket.user.username);
+                logSocket(`Relaying ${eventName} to peer.`, {
+                    callId,
+                    from: socket.user.username,
+                    to: targetUsername,
+                    isSharing,
+                });
+
+                emitToUser(io, targetUsername, eventName, {
+                    callId,
+                    username: socket.user.username,
+                    isScreenSharing: isSharing,
+                });
+            } catch (error) {
+                errorCall(`${eventName} failed`, error, {
+                    callId,
+                    from: socket.user.username,
+                });
+            }
+        };
+    }
+
+    socket.on('screen-share-started', handleScreenShareEvent('screen-share-started', true));
+    socket.on('screen-share-stopped', handleScreenShareEvent('screen-share-stopped', false));
 };
+
