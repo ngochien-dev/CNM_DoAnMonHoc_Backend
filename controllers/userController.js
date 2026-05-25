@@ -278,6 +278,80 @@ const getSuggestions = async (req, res) => {
   }
 };
 
+const getUserStats = async (req, res) => {
+  try {
+    const { username } = req.params;
+    
+    // 1. Lấy thông tin user (để đếm bạn bè)
+    const userData = await docClient.send(new GetCommand({ TableName: 'Users', Key: { username } }));
+    if (!userData.Item) return res.status(404).json({ error: "User not found" });
+    const user = userData.Item;
+    
+    // 2. Scan Groups (để đếm nhóm tham gia)
+    const groupsData = await docClient.send(new ScanCommand({ TableName: 'Groups' }));
+    const groups = groupsData.Items || [];
+    const totalGroups = groups.filter(g => g.participants && g.participants.includes(username)).length;
+    
+    // 3. Scan Messages (để đếm tin nhắn và tạo Activity Timeline 30 ngày)
+    const messagesData = await docClient.send(new ScanCommand({ TableName: 'Messages' }));
+    const allMessages = messagesData.Items || [];
+    const myMessages = allMessages.filter(m => (m.senderUsername || m.sender) === username);
+    
+    // 4. Khởi tạo mốc thời gian 30 ngày gần nhất
+    const temporalMap = {};
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+      temporalMap[dateStr] = 0;
+    }
+    
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 30);
+    
+    let textCount = 0;
+    let imageCount = 0;
+    let fileCount = 0;
+    
+    myMessages.forEach(m => {
+      // Đếm loại tin nhắn
+      if (m.fileType === 'image') imageCount++;
+      else if (m.fileType && m.fileType !== 'image') fileCount++;
+      else textCount++;
+      
+      // Đếm theo ngày
+      const msgTime = m.createdAt || m.time || m.sentAt;
+      if (msgTime) {
+        const d = new Date(msgTime);
+        if (d >= cutoffDate) {
+          const dateStr = d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+          if (temporalMap[dateStr] !== undefined) {
+            temporalMap[dateStr]++;
+          }
+        }
+      }
+    });
+    
+    const activityTimeline = Object.keys(temporalMap).map(date => ({
+      date,
+      count: temporalMap[date]
+    }));
+    
+    res.json({
+      totalFriends: user.friends ? user.friends.length : 0,
+      totalGroups,
+      totalMessagesSent: myMessages.length,
+      createdAt: user.createdAt,
+      mediaStats: { text: textCount, images: imageCount, files: fileCount },
+      activityTimeline
+    });
+    
+  } catch (err) {
+    console.error("getUserStats error:", err);
+    res.status(500).json(err);
+  }
+};
+
 module.exports = {
   getUser,
   updateUser,
@@ -290,6 +364,7 @@ module.exports = {
   terminateSession,
   getLeaderboard,
   updateScore,
-  getSuggestions
+  getSuggestions,
+  getUserStats
 };
 
