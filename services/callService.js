@@ -222,6 +222,14 @@ const CallService = {
         return DEFAULT_RING_TIMEOUT_MS;
     },
 
+    clearCallTimeout: (callId) => {
+        const call = activeCallsStore.getActiveCall(callId);
+        if (call) {
+            activeCallsStore.clearCallTimeout(call);
+            logCall('Cleared call timeout manually.', { callId });
+        }
+    },
+
     acceptCall: async ({ callId, username }) => {
         logCall('Accepting active call.', {
             callId,
