@@ -449,6 +449,70 @@ module.exports = function registerCallSocket({ io, socket }) {
         }
     });
 
+    registerAliases(socket, ['accepting-call', 'call:accepting'], async ({ callId } = {}, ack = () => {}, receivedEventName) => {
+        try {
+            logSocket(`Received ${receivedEventName}.`, {
+                callId,
+                username: socket.user.username,
+            });
+            debugCall(`received ${receivedEventName}`, {
+                eventName: receivedEventName,
+                callId,
+                from: socket.user.username,
+                fromSocketId: socket.id,
+            });
+
+            const call = CallService.getActiveCall(callId);
+            if (!call) {
+                warnCall(`${receivedEventName} rejected by CallService: not found`, {
+                    callId,
+                    from: socket.user.username,
+                });
+                return ack({ ok: false, status: 'not_found', message: 'Call does not exist anymore.' });
+            }
+
+            if (call.calleeUsername !== socket.user.username) {
+                warnCall(`${receivedEventName} rejected by CallService: forbidden`, {
+                    callId,
+                    from: socket.user.username,
+                });
+                return ack({ ok: false, status: 'forbidden', message: 'Only the callee can accept this call.' });
+            }
+
+            if (call.status !== 'ringing') {
+                warnCall(`${receivedEventName} rejected by CallService: invalid state`, {
+                    callId,
+                    from: socket.user.username,
+                    status: call.status,
+                });
+                return ack({ ok: false, status: 'invalid_state', message: 'Call is no longer ringing.' });
+            }
+
+            CallService.clearCallTimeout(callId);
+            debugCall('cleared call timeout for accepting', {
+                callId,
+                username: socket.user.username,
+            });
+
+            emitToUser(
+                io,
+                call.callerUsername,
+                'accepting-call',
+                buildEventPayload(call, call.callerUsername, {
+                    acceptedBy: call.calleeUsername,
+                }),
+            );
+
+            return ack({ ok: true });
+        } catch (error) {
+            errorCall(`${receivedEventName} failed`, error, {
+                callId,
+                from: socket.user.username,
+            });
+            return ack({ ok: false, status: 'failed', message: 'Could not process accepting-call.' });
+        }
+    });
+
     registerAliases(socket, [CALL_EVENTS.reject, LEGACY_CALL_EVENTS.reject], async ({ callId, reason } = {}, ack = () => {}, receivedEventName) => {
         try {
             logSocket(`Received ${receivedEventName}.`, {

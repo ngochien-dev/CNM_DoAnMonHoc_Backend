@@ -549,6 +549,64 @@ function removeParticipantFromAllCalls(username) {
   }
 }
 
+function removeParticipantBySocketId(socketId) {
+  debug('removeParticipantBySocketId called', { socketId });
+
+  try {
+    if (!socketId) {
+      warn('removeParticipantBySocketId skipped because socketId missing');
+      return success([]);
+    }
+
+    const affectedCalls = activeGroupCalls.removeParticipantBySocketId(socketId);
+
+    debug('Removed socket from group calls', {
+      socketId,
+      affectedCalls: affectedCalls.length,
+    });
+
+    return success(affectedCalls);
+  } catch (error) {
+    errorLog('removeParticipantBySocketId crashed', {
+      message: error.message,
+      stack: error.stack,
+    });
+    return failure(error);
+  }
+}
+
+function cleanupStaleCalls(options = {}) {
+  debug('cleanupStaleCalls called', options);
+
+  try {
+    return success(activeGroupCalls.cleanupStaleCalls(options));
+  } catch (error) {
+    errorLog('cleanupStaleCalls crashed', {
+      message: error.message,
+      stack: error.stack,
+    });
+    return failure(error);
+  }
+}
+
+function getDebugSnapshot() {
+  try {
+    return activeGroupCalls.getDebugSnapshot();
+  } catch (error) {
+    errorLog('getDebugSnapshot crashed', {
+      message: error.message,
+      stack: error.stack,
+    });
+    return {
+      callIds: [],
+      groupIds: [],
+      groupToCallId: {},
+      calls: [],
+      error: error.message,
+    };
+  }
+}
+
 module.exports = {
   startGroupCall,
   joinGroupCall,
@@ -560,4 +618,7 @@ module.exports = {
   isParticipant,
   getParticipant,
   removeParticipantFromAllCalls,
+  removeParticipantBySocketId,
+  cleanupStaleCalls,
+  getDebugSnapshot,
 };
