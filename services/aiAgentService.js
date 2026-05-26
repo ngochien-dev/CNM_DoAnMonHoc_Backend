@@ -1,5 +1,5 @@
 const docClient = require('../awsConfig');
-const { ScanCommand, GetCommand } = require("@aws-sdk/lib-dynamodb");
+const { ScanCommand, GetCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const fetch = require('node-fetch');
 
 /**
@@ -239,25 +239,108 @@ class AIAgentService {
 
     /**
      * Tool: Hỗ trợ viết (Writing Assistant)
-     * Trả về metadata để Gemini xử lý chỉnh sửa văn phong, sửa lỗi, dịch thuật.
+     * Trả về metadata để Gemini xử lý chỉnh sửa văn phong, sửa lỗi.
      * Gemini sẽ tự xử lý dựa trên action và text — không cần truy vấn DB.
      */
-    async writingAssistant({ action, text, targetLanguage }) {
+    async writingAssistant({ action, text }) {
         const actionLabels = {
             polite: 'Chuyển sang giọng văn lịch sự, trang trọng hơn',
             professional: 'Chuyển sang giọng văn chuyên nghiệp, formal',
             casual: 'Chuyển sang giọng văn thân thiện, gần gũi',
             fix_grammar: 'Sửa lỗi chính tả và ngữ pháp',
-            translate: `Dịch sang ${targetLanguage || 'English'}`,
         };
 
         return {
             action,
             actionLabel: actionLabels[action] || action,
             originalText: text,
-            targetLanguage: targetLanguage || null,
-            instruction: `Hãy ${actionLabels[action] || 'xử lý'} đoạn văn bản sau:\n\n"${text}"\n\nTrả về kết quả đã xử lý. Nếu là dịch thuật, kèm theo cả bản gốc.`,
+            instruction: `Hãy ${actionLabels[action] || 'xử lý'} đoạn văn bản sau:\n\n"${text}"\n\nTrả về kết quả đã xử lý.`,
         };
+    }
+
+    /**
+     * Tool: Gửi lời mời kết bạn tự động
+     * Tìm user theo username (exact match) và gửi friend request.
+     */
+    async sendFriendRequest({ fromUser, targetUsername, io }) {
+        try {
+            if (!fromUser || !targetUsername) {
+                return { success: false, error: 'Thiếu thông tin người gửi hoặc người nhận.' };
+            }
+
+            if (fromUser.toLowerCase() === targetUsername.toLowerCase()) {
+                return { success: false, error: 'Bạn không thể tự kết bạn với chính mình!' };
+            }
+
+            // 1. Tìm target user (exact match)
+            const targetData = await docClient.send(new GetCommand({
+                TableName: 'Users',
+                Key: { username: targetUsername },
+            }));
+
+            if (!targetData.Item) {
+                return { success: false, error: `Không tìm thấy người dùng "${targetUsername}". Vui lòng kiểm tra lại username.` };
+            }
+
+            // 2. Kiểm tra fromUser có tồn tại không
+            const fromData = await docClient.send(new GetCommand({
+                TableName: 'Users',
+                Key: { username: fromUser },
+            }));
+
+            if (!fromData.Item) {
+                return { success: false, error: 'Không tìm thấy thông tin tài khoản của bạn.' };
+            }
+
+            // 3. Kiểm tra block
+            const blockedByMe = fromData.Item.blockedUsers || [];
+            if (blockedByMe.includes(targetUsername)) {
+                return { success: false, error: `Bạn đã chặn người dùng "${targetUsername}". Hãy bỏ chặn trước khi kết bạn.` };
+            }
+
+            const blockedByTarget = targetData.Item.blockedUsers || [];
+            if (blockedByTarget.includes(fromUser)) {
+                return { success: false, error: `Không thể gửi lời mời kết bạn tới "${targetUsername}".` };
+            }
+
+            // 4. Kiểm tra đã là bạn bè chưa
+            const myFriends = fromData.Item.friends || [];
+            if (myFriends.includes(targetUsername)) {
+                return { success: false, error: `Bạn và "${targetUsername}" đã là bạn bè rồi!` };
+            }
+
+            // 5. Kiểm tra đã gửi lời mời trước đó chưa
+            const targetRequests = targetData.Item.friendRequests || [];
+            if (targetRequests.includes(fromUser)) {
+                return { success: false, error: `Bạn đã gửi lời mời kết bạn tới "${targetUsername}" trước đó rồi. Hãy chờ họ phản hồi.` };
+            }
+
+            // 6. Gửi lời mời kết bạn
+            const updatedRequests = [...targetRequests, fromUser];
+            await docClient.send(new UpdateCommand({
+                TableName: 'Users',
+                Key: { username: targetUsername },
+                UpdateExpression: 'set friendRequests = :r',
+                ExpressionAttributeValues: { ':r': updatedRequests },
+            }));
+
+            // 7. Emit socket events để thông báo real-time
+            if (io) {
+                io.emit('groups_updated');
+                io.emit('new_friend_request', { toUser: targetUsername, fromUser });
+            }
+
+            const displayName = targetData.Item.displayName || targetUsername;
+            return {
+                success: true,
+                message: `Đã gửi lời mời kết bạn tới "${displayName}" (@${targetUsername}) thành công! Hãy chờ họ chấp nhận.`,
+                targetUsername,
+                targetDisplayName: displayName,
+            };
+        } catch (err) {
+            console.error('[AIAgent] sendFriendRequest error:', err);
+            return { success: false, error: 'Lỗi hệ thống khi gửi lời mời kết bạn: ' + err.message };
+        }
     }
 
     /**

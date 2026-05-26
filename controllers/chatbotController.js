@@ -69,21 +69,17 @@ const IN_CHAT_TOOLS = [
       },
       {
         name: "writing_assistant",
-        description: "Công cụ hỗ trợ viết tin nhắn: chỉnh sửa văn phong (lịch sự, chuyên nghiệp), sửa lỗi chính tả/ngữ pháp, hoặc dịch thuật sang ngôn ngữ khác. Sử dụng khi người dùng muốn sửa/chỉnh/dịch một đoạn text.",
+        description: "Công cụ hỗ trợ viết tin nhắn: chỉnh sửa văn phong (lịch sự, chuyên nghiệp), sửa lỗi chính tả/ngữ pháp. Sử dụng khi người dùng muốn sửa/chỉnh một đoạn text.",
         parameters: {
           type: "OBJECT",
           properties: {
             action: {
               type: "STRING",
-              description: "Loại hành động: 'polite' (lịch sự hơn), 'professional' (chuyên nghiệp), 'fix_grammar' (sửa lỗi chính tả/ngữ pháp), 'translate' (dịch thuật), 'casual' (thân thiện)."
+              description: "Loại hành động: 'polite' (lịch sự hơn), 'professional' (chuyên nghiệp), 'fix_grammar' (sửa lỗi chính tả/ngữ pháp), 'casual' (thân thiện)."
             },
             text: {
               type: "STRING",
               description: "Đoạn văn bản cần xử lý."
-            },
-            targetLanguage: {
-              type: "STRING",
-              description: "Ngôn ngữ đích khi action='translate'. Ví dụ: 'English', 'Japanese', 'Korean', 'Vietnamese'."
             }
           },
           required: ["action", "text"]
@@ -110,6 +106,20 @@ const IN_CHAT_TOOLS = [
           },
           required: ["action"]
         }
+      },
+      {
+        name: "send_friend_request",
+        description: "Gửi lời mời kết bạn tự động cho người dùng theo username. Sử dụng khi người dùng yêu cầu kết bạn, thêm bạn, hoặc gửi lời mời kết bạn với ai đó. Ví dụ: 'kết bạn với kuruma', 'giúp tôi kết bạn với user123', 'thêm bạn abc'.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            targetUsername: {
+              type: "STRING",
+              description: "Username của người dùng muốn kết bạn. Đây là tên đăng nhập (username), không phải tên hiển thị."
+            }
+          },
+          required: ["targetUsername"]
+        }
       }
     ]
   }
@@ -120,8 +130,9 @@ const IN_CHAT_SYSTEM_INSTRUCTION = `Bạn là "Trợ lý AI OTT" — một AI Ag
 
 NHIỆM VỤ CHÍNH:
 - Bạn có quyền truy cập lịch sử tin nhắn của phòng chat hiện tại thông qua các tool function.
-- Khi người dùng yêu cầu TÓM TẮT, TÌM KIẾM, GỢI Ý PHẢN HỒI, SỬA VĂN PHONG, DỊCH THUẬT, TÓM TẮT LINK, hoặc OCR → Hãy GỌI TOOL tương ứng.
+- Khi người dùng yêu cầu TÓM TẮT, TÌM KIẾM, GỢI Ý PHẢN HỒI, SỬA VĂN PHONG, TÓM TẮT LINK, OCR, hoặc KẾT BẠN → Hãy GỌI TOOL tương ứng.
 - Khi người dùng hỏi đáp thông thường, trò chuyện, hoặc hỏi về tính năng ứng dụng → Trả lời trực tiếp KHÔNG gọi tool.
+- Khi người dùng yêu cầu kết bạn (ví dụ: "kết bạn với X", "thêm bạn Y", "giúp tôi kết bạn với Z") → GỌI tool send_friend_request với targetUsername là username mà người dùng đề cập.
 
 QUY TẮC:
 1. Luôn trả lời bằng tiếng Việt, ngắn gọn, rõ ràng.
@@ -129,8 +140,9 @@ QUY TẮC:
 3. Khi tóm tắt hội thoại, hãy liệt kê các chủ đề chính và đề xuất quan trọng.
 4. Khi tìm kiếm tin nhắn, hãy format kết quả rõ ràng với thời gian và người gửi.
 5. Khi gợi ý smart replies, hãy đưa ra 3-5 câu ngắn gọn, phù hợp ngữ cảnh.
-6. Khi sửa văn phong/dịch, hãy trả về cả bản gốc và bản đã sửa/dịch.
-7. Xưng là "Trợ lý AI" hoặc "Tôi".
+6. Khi sửa văn phong, hãy trả về cả bản gốc và bản đã sửa.
+7. Khi kết bạn, hãy báo kết quả rõ ràng (thành công hoặc lỗi gì).
+8. Xưng là "Trợ lý AI" hoặc "Tôi".
 
 THÔNG TIN ỨNG DỤNG:
 - Tên: OTT Chat & Collaboration Platform
@@ -159,13 +171,13 @@ Thông tin chi tiết về ứng dụng:
 
 Hãy trả lời ngắn gọn, lịch sự, chuyên nghiệp. Xưng là "Trợ lý OTT" hoặc "Tôi". Trả lời có cấu trúc và Markdown nếu cần.`,
   coder: "Bạn là một chuyên gia lập trình phần mềm cấp cao. Hãy giải thích và viết code sạch, tối ưu bằng Markdown tiếng Việt.",
-  translator: "Bạn là một dịch thuật viên chuyên nghiệp. Hãy dịch các đoạn văn bản chính xác, tự nhiên giữa các ngôn ngữ và giải thích nếu cần.",
+
   writer: "Bạn là một nhà sáng tạo nội dung chuyên nghiệp. Hãy viết bài viết sáng tạo, email, kịch bản, sửa văn phong tiếng Việt cuốn hút.",
   health: "Bạn là một chuyên gia tư vấn sức khỏe và phong cách sống lành mạnh. Đưa ra lời khuyên khoa học về dinh dưỡng và sinh hoạt bằng tiếng Việt (luôn ghi chú lời khuyên này không thay thế chẩn đoán y tế).",
 };
 
 // ─── Execute Tool Function ──────────────────────────────────────────────────
-async function executeToolFunction(functionCall, roomId) {
+async function executeToolFunction(functionCall, roomId, fromUser, io) {
   const { name, args } = functionCall;
   
   switch (name) {
@@ -194,7 +206,6 @@ async function executeToolFunction(functionCall, roomId) {
       return await aiAgentService.writingAssistant({
         action: args.action,
         text: args.text,
-        targetLanguage: args.targetLanguage,
       });
 
     case 'process_content':
@@ -206,6 +217,13 @@ async function executeToolFunction(functionCall, roomId) {
       }
       return { error: 'Missing required parameters for process_content' };
 
+    case 'send_friend_request':
+      return await aiAgentService.sendFriendRequest({
+        fromUser,
+        targetUsername: args.targetUsername,
+        io,
+      });
+
     default:
       return { error: `Unknown tool: ${name}` };
   }
@@ -215,6 +233,8 @@ async function executeToolFunction(functionCall, roomId) {
 exports.chatWithGemini = async (req, res) => {
   try {
     const { messages, agent, roomId } = req.body;
+    const fromUser = req.body.fromUser || req.user?.username || req.auth?.username;
+    const io = req.app.get('io');
 
     // ─── Determine mode: in-chat agent vs standalone agents ─────────────────
     const isInChatAgent = agent === 'in-chat';
@@ -228,14 +248,26 @@ exports.chatWithGemini = async (req, res) => {
     }
 
     // Convert message roles: system/user → user, assistant → model
-    const contents = messages.map((msg) => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }],
-    }));
+    const mapped = messages
+      .filter(msg => msg.content && msg.content.trim())
+      .map((msg) => ({
+        role: msg.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: msg.content }],
+      }));
 
     // Ensure first message has role 'user'
-    if (contents.length > 0 && contents[0].role === 'model') {
-      contents[0].role = 'user';
+    if (mapped.length > 0 && mapped[0].role === 'model') {
+      mapped[0].role = 'user';
+    }
+
+    // Merge consecutive messages with identical roles to strictly alternate
+    const contents = [];
+    for (const item of mapped) {
+      if (contents.length > 0 && contents[contents.length - 1].role === item.role) {
+        contents[contents.length - 1].parts[0].text += '\n' + item.parts[0].text;
+      } else {
+        contents.push(item);
+      }
     }
 
     // ─── In-Chat Agent: Use Function Calling ────────────────────────────────
@@ -259,13 +291,13 @@ exports.chatWithGemini = async (req, res) => {
         const { functionCall } = functionCallPart;
         console.log(`[AI Agent] Function call: ${functionCall.name}`, functionCall.args);
 
-        const toolResult = await executeToolFunction(functionCall, roomId);
+        const toolResult = await executeToolFunction(functionCall, roomId, fromUser, io);
         console.log(`[AI Agent] Tool result keys:`, Object.keys(toolResult));
 
         // Send tool result back to Gemini for natural language synthesis
         const functionResponseContents = [
           ...contents,
-          { role: 'model', parts: [{ functionCall }] },
+          candidate.content,
           {
             role: 'user',
             parts: [{
@@ -324,6 +356,18 @@ exports.chatWithGemini = async (req, res) => {
 
   } catch (err) {
     console.error('Gemini API error:', err?.response?.data || err.message || err);
+
+    // Detect quota / rate-limit errors from the GenAI client and return a clearer response
+    const statusCode = err?.status || err?.response?.status || err?.response?.data?.error?.code;
+    const isQuota = Number(statusCode) === 429 || Number(statusCode) === 403;
+
+    if (isQuota) {
+      return res.status(503).json({
+        reply: 'Hệ thống AI đang quá tải hoặc quota đã hết. Vui lòng kiểm tra billing/GEMINI_API_KEY hoặc thử lại sau vài phút.',
+        mode: 'error',
+      });
+    }
+
     res.status(500).json({
       reply: 'Xin lỗi, có lỗi xảy ra khi kết nối AI. Lỗi: ' + (err.message || 'Unknown'),
       mode: 'error',
