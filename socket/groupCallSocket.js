@@ -2,16 +2,22 @@
 
 const groupCallService = require('../services/groupCallService');
 const presenceStore = require('../store/presenceStore');
+const docClient = require('../awsConfig');
+const { GetCommand } = require('@aws-sdk/lib-dynamodb');
 
 const CALL_DEBUG_ENABLED = process.env.CALL_DEBUG !== 'false';
 const LOG_PREFIX = '[GROUP_CALL][BACKEND]';
+const DISCONNECT_CLEANUP_DELAY_MS = Number(process.env.GROUP_CALL_DISCONNECT_CLEANUP_MS) || 15000;
+const STALE_CALL_MAX_AGE_MS = Number(process.env.GROUP_CALL_STALE_MAX_AGE_MS) || 6 * 60 * 60 * 1000;
 
 const GROUP_CALL_EVENTS = {
   start: 'group-call:start',
   incoming: 'group-call:incoming',
   started: 'group-call:started',
   join: 'group-call:join',
+  rejoin: 'group-call:rejoin',
   joined: 'group-call:joined',
+  rejoined: 'group-call:rejoined',
   userJoined: 'group-call:user-joined',
   leave: 'group-call:leave',
   userLeft: 'group-call:user-left',
@@ -71,6 +77,25 @@ function getSocketUsername(socket) {
   return socket.user?.username;
 }
 
+function normalizeUsername(value) {
+  if (!value) return '';
+
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  const normalized = (
+    value.username ||
+    value.userName ||
+    value.name ||
+    value.id ||
+    value.userId ||
+    ''
+  );
+
+  return typeof normalized === 'string' ? normalized.trim() : String(normalized).trim();
+}
+
 function getUserSocketDebug(username) {
   return {
     username,
@@ -102,9 +127,42 @@ function emitError(socket, message, extra = {}) {
   });
 
   socket.emit(GROUP_CALL_EVENTS.error, {
+    ok: false,
     message,
     ...extra,
   });
+}
+
+function safeAck(ack, payload) {
+  if (typeof ack === 'function') {
+    ack(payload);
+    return true;
+  }
+
+  return false;
+}
+
+function emitGroupCallError(socket, message, extra = {}) {
+  emitError(socket, message, extra);
+}
+
+function respondSuccess(ack, payload) {
+  return safeAck(ack, payload);
+}
+
+function respondError(socket, ack, message, extra = {}) {
+  const payload = {
+    ok: false,
+    message,
+    ...extra,
+  };
+
+  if (safeAck(ack, payload)) {
+    return true;
+  }
+
+  emitGroupCallError(socket, message, extra);
+  return false;
 }
 
 function emitToUser(io, username, eventName, payload) {
@@ -116,6 +174,7 @@ function emitToUser(io, username, eventName, payload) {
     socketCount: socketIds.length,
     socketIds,
     callId: payload?.callId || payload?.call?.callId || null,
+    room: `user:${username}`,
   });
 
   if (socketIds.length === 0) {
@@ -139,15 +198,154 @@ function emitToParticipants(io, participants, eventName, payload, exceptUsername
   });
 }
 
+function cleanupDisconnectedGroupCallSocket(io, socket, reason) {
+  const username = getSocketUsername(socket);
+
+  try {
+    debug('Running delayed group call disconnect cleanup', {
+      username,
+      socketId: socket.id,
+      reason,
+      delayMs: DISCONNECT_CLEANUP_DELAY_MS,
+      activeGroupCalls: groupCallService.getDebugSnapshot(),
+    });
+
+    const bySocketResult = groupCallService.removeParticipantBySocketId(socket.id);
+
+    if (!bySocketResult.ok) {
+      warn('removeParticipantBySocketId failed on disconnect', {
+        username,
+        socketId: socket.id,
+        error: bySocketResult.error,
+      });
+    } else {
+      bySocketResult.data.forEach((entry) => {
+        const call = entry?.call;
+        if (!call) return;
+
+        emitToParticipants(
+          io,
+          call.participants,
+          GROUP_CALL_EVENTS.userLeft,
+          {
+            callId: call.callId,
+            groupId: call.groupId,
+            username: entry.previousUsername || username,
+            participants: call.participants,
+            reason: 'disconnect',
+          },
+          entry.previousUsername || username
+        );
+      });
+    }
+
+    const staleResult = groupCallService.cleanupStaleCalls({
+      maxAgeMs: STALE_CALL_MAX_AGE_MS,
+    });
+
+    if (!staleResult.ok) {
+      warn('cleanupStaleCalls failed on disconnect', {
+        username,
+        socketId: socket.id,
+        error: staleResult.error,
+      });
+    }
+
+    debug('Delayed group call disconnect cleanup finished', {
+      username,
+      socketId: socket.id,
+      affectedBySocket: bySocketResult.ok ? bySocketResult.data.length : 0,
+      staleRemoved: staleResult.ok ? staleResult.data.length : 0,
+      activeGroupCalls: groupCallService.getDebugSnapshot(),
+    });
+  } catch (error) {
+    errorLog('delayed group call disconnect cleanup failed', error, {
+      username,
+      socketId: socket.id,
+      reason,
+    });
+  }
+}
+
 function normalizeParticipants(participants) {
   if (!Array.isArray(participants)) return [];
 
-  return participants
-    .map((participant) => {
-      if (typeof participant === 'string') return participant;
-      return participant?.username;
-    })
-    .filter(Boolean);
+  return Array.from(
+    new Set(participants.map(normalizeUsername).filter(Boolean))
+  );
+}
+
+async function getGroupMembersFromStore(groupId) {
+  if (!groupId) {
+    return {
+      found: false,
+      members: [],
+      group: null,
+      error: 'groupId is required',
+    };
+  }
+
+  try {
+    const data = await docClient.send(
+      new GetCommand({
+        TableName: 'Groups',
+        Key: { groupId },
+      })
+    );
+    const group = data.Item || null;
+    const members = group
+      ? normalizeParticipants([group.owner, ...(group.members || [])])
+      : [];
+
+    debug('Loaded group members for group call start', {
+      groupId,
+      found: Boolean(group),
+      owner: group?.owner || null,
+      memberCount: members.length,
+      members,
+    });
+
+    return {
+      found: Boolean(group),
+      members,
+      group,
+      error: null,
+    };
+  } catch (error) {
+    errorLog('Could not load group members for group call start', error, {
+      groupId,
+    });
+
+    return {
+      found: false,
+      members: [],
+      group: null,
+      error: error?.message || 'Could not load group members',
+    };
+  }
+}
+
+function buildInviteTargets({ payload, groupMembers, creatorUsername }) {
+  const rawPayloadReceivers = [
+    ...(Array.isArray(payload.invitedParticipants) ? payload.invitedParticipants : []),
+    ...(Array.isArray(payload.participants) ? payload.participants : []),
+    ...(Array.isArray(payload.targetUsernames) ? payload.targetUsernames : []),
+    ...(Array.isArray(payload.participantUsernames) ? payload.participantUsernames : []),
+    ...(Array.isArray(payload.calleeUsernames) ? payload.calleeUsernames : []),
+    ...(Array.isArray(payload.members) ? payload.members : []),
+  ];
+
+  const payloadReceivers = normalizeParticipants(rawPayloadReceivers);
+  const sourceMembers = groupMembers.length > 0 ? groupMembers : payloadReceivers;
+  const inviteTargets = sourceMembers.filter(
+    (username) => username && username !== creatorUsername
+  );
+
+  return {
+    payloadReceivers,
+    sourceMembers,
+    inviteTargets,
+  };
 }
 
 function isUserInCall(callId, username) {
@@ -159,7 +357,7 @@ function isUserInCall(callId, username) {
 
 function validateSignalingParticipant({ callId, fromUsername, targetUsername, socket }) {
   if (!callId || !targetUsername) {
-    emitError(socket, 'callId and targetUsername are required', {
+    warn('Invalid signaling participant: callId and targetUsername are required', {
       callId,
       targetUsername,
     });
@@ -167,7 +365,7 @@ function validateSignalingParticipant({ callId, fromUsername, targetUsername, so
   }
 
   if (!isUserInCall(callId, fromUsername)) {
-    emitError(socket, 'Sender is not a participant in this group call', {
+    warn('Invalid signaling participant: sender is not in call', {
       callId,
       fromUsername,
     });
@@ -175,7 +373,7 @@ function validateSignalingParticipant({ callId, fromUsername, targetUsername, so
   }
 
   if (!isUserInCall(callId, targetUsername)) {
-    emitError(socket, 'Target is not a participant in this group call', {
+    warn('Invalid signaling participant: target is not in call', {
       callId,
       targetUsername,
     });
@@ -183,7 +381,7 @@ function validateSignalingParticipant({ callId, fromUsername, targetUsername, so
   }
 
   if (!presenceStore.isOnline(targetUsername)) {
-    emitError(socket, 'Target user is offline', {
+    warn('Invalid signaling participant: target user is offline', {
       callId,
       targetUsername,
       target: getUserSocketDebug(targetUsername),
@@ -195,23 +393,20 @@ function validateSignalingParticipant({ callId, fromUsername, targetUsername, so
 }
 
 module.exports = function registerGroupCallSocket({ io, socket }) {
-  socket.on(GROUP_CALL_EVENTS.start, (payload = {}, ack = () => {}) => {
+  debug('Group call socket handler registered', {
+    username: getSocketUsername(socket),
+    socketId: socket.id,
+    userRoom: `user:${getSocketUsername(socket)}`,
+    rooms: Array.from(socket.rooms || []),
+    connectionCount: presenceStore.getConnectionCount(getSocketUsername(socket)),
+    socketIds: presenceStore.getSocketIds(getSocketUsername(socket)),
+  });
+
+  socket.on(GROUP_CALL_EVENTS.start, async (payload = {}, ack) => {
     const creatorUsername = getSocketUsername(socket);
 
     try {
       const groupId = payload.groupId;
-
-      // Normalize receivers: ưu tiên theo thứ tự invitedParticipants → participants → targetUsernames → participantUsernames → calleeUsernames → members
-      const rawReceivers =
-        payload.invitedParticipants ||
-        payload.participants ||
-        payload.targetUsernames ||
-        payload.participantUsernames ||
-        payload.calleeUsernames ||
-        payload.members ||
-        [];
-
-      const invitedParticipants = normalizeParticipants(rawReceivers);
 
       console.log('[GroupCallSocket] start received', {
         socketId: socket.id,
@@ -227,12 +422,60 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         },
       });
 
+      const groupLookup = await getGroupMembersFromStore(groupId);
+      const { payloadReceivers, sourceMembers, inviteTargets } = buildInviteTargets({
+        payload,
+        groupMembers: groupLookup.members,
+        creatorUsername,
+      });
+
       debug('Received group-call:start', {
         from: creatorUsername,
         socketId: socket.id,
         groupId,
-        invitedParticipants,
+        groupFound: groupLookup.found,
+        groupLookupError: groupLookup.error,
+        payloadReceivers,
+        sourceMembers,
+        inviteTargets,
+        inviteTargetDebug: inviteTargets.map(getUserSocketDebug),
       });
+
+      if (!groupId) {
+        return respondError(socket, ack, 'groupId is required', {
+          eventName: GROUP_CALL_EVENTS.start,
+        });
+      }
+
+      if (groupLookup.found && !sourceMembers.includes(creatorUsername)) {
+        warn('Rejected group-call:start because caller is not a group member', {
+          groupId,
+          creatorUsername,
+          groupMembers: sourceMembers,
+        });
+        return respondError(socket, ack, 'Only group members can start a group call', {
+          eventName: GROUP_CALL_EVENTS.start,
+          groupId,
+        });
+      }
+
+      if (inviteTargets.length === 0) {
+        warn('No invite targets for group-call:start; incoming will not be emitted', {
+          groupId,
+          creatorUsername,
+          groupFound: groupLookup.found,
+          groupLookupError: groupLookup.error,
+          payloadReceivers,
+          sourceMembers,
+          onlineUsers: presenceStore.getOnlineUsernames(),
+        });
+        return respondError(socket, ack, 'No group members found to invite', {
+          eventName: GROUP_CALL_EVENTS.start,
+          groupId,
+          payloadReceivers,
+          sourceMembers,
+        });
+      }
 
       const result = groupCallService.startGroupCall({
         groupId,
@@ -241,22 +484,26 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!result.ok) {
-        emitError(socket, result.error, { eventName: GROUP_CALL_EVENTS.start });
-        return ack({ ok: false, message: result.error });
+        return respondError(socket, ack, result.error, {
+          eventName: GROUP_CALL_EVENTS.start,
+        });
       }
 
       const call = result.data;
-
-      const inviteTargets = invitedParticipants.filter(
-        (username) => username && username !== creatorUsername
-      );
+      socket.join(`group-call:${call.callId}`);
 
       console.log('[GroupCallSocket] start normalized receivers', {
         callerUsername: creatorUsername,
         groupId,
+        groupFound: groupLookup.found,
+        groupMembers: groupLookup.members,
+        payloadReceivers,
+        sourceMembers,
         receiverUsernames: inviteTargets,
         excludedCaller: creatorUsername,
         onlineUsers: presenceStore.getOnlineUsernames(),
+        receiverSocketMap: inviteTargets.map(getUserSocketDebug),
+        callerRooms: Array.from(socket.rooms || []),
       });
 
       console.log('[GroupCallSocket] call created', {
@@ -303,13 +550,17 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
           callerUsername: creatorUsername,
           fromUsername: creatorUsername,
           createdBy: creatorUsername,
-          participants: inviteTargets,
+          participants: sourceMembers,
+          invitedParticipants: inviteTargets,
           call: {
             callId: call.callId,
             groupId: call.groupId,
             createdBy: creatorUsername,
             creatorUsername,
-            participants: call.participants,
+            participants: sourceMembers.map((memberUsername) => ({
+              username: memberUsername,
+              joined: memberUsername === creatorUsername,
+            })),
           },
           activeGroupCall: call,
         });
@@ -321,7 +572,7 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         inviteTargetDebug: inviteTargets.map(getUserSocketDebug),
       });
 
-      return ack({
+      return respondSuccess(ack, {
         ok: true,
         call,
         inviteTargets,
@@ -333,21 +584,31 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         payload,
       });
 
-      emitError(socket, 'Could not start group call');
-      return ack({ ok: false, message: 'Could not start group call' });
+      return respondError(socket, ack, 'Could not start group call');
     }
   });
 
-  socket.on(GROUP_CALL_EVENTS.join, (payload = {}, ack = () => {}) => {
+  socket.on(GROUP_CALL_EVENTS.join, (payload = {}, ack) => {
     const username = getSocketUsername(socket);
 
     try {
-      const { callId } = payload;
+      const { callId, groupId, roomId } = payload;
+      const activeCallsBefore = groupCallService.getDebugSnapshot();
+      const foundCallResult = groupCallService.getGroupCall(callId);
+      const foundCall = foundCallResult.ok ? foundCallResult.data : null;
+      const existingParticipant = groupCallService.getParticipant({ callId, username });
 
       debug('Received group-call:join', {
         callId,
+        groupId: groupId || null,
+        roomId: roomId || null,
         username,
         socketId: socket.id,
+        activeGroupCalls: activeCallsBefore,
+        callFound: Boolean(foundCall),
+        existingParticipant: Boolean(existingParticipant),
+        participantsBeforeJoin: foundCall?.participants || [],
+        roomsBeforeJoin: Array.from(socket.rooms || []),
       });
 
       const beforeParticipantsResult = groupCallService.getParticipants(callId);
@@ -362,11 +623,25 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!result.ok) {
-        emitError(socket, result.error, { eventName: GROUP_CALL_EVENTS.join, callId });
-        return ack({ ok: false, message: result.error });
+        return respondError(socket, ack, result.error, {
+          eventName: GROUP_CALL_EVENTS.join,
+          callId,
+        });
       }
 
       const call = result.data;
+      socket.join(`group-call:${call.callId}`);
+
+      debug('group-call:join store after addParticipant', {
+        username,
+        socketId: socket.id,
+        callId: call.callId,
+        groupId: call.groupId,
+        activeGroupCalls: groupCallService.getDebugSnapshot(),
+        participantsBeforeJoin: beforeParticipants,
+        participantsAfterJoin: call.participants,
+        roomsAfterJoin: Array.from(socket.rooms || []),
+      });
 
       socket.emit(GROUP_CALL_EVENTS.joined, {
         callId: call.callId,
@@ -392,12 +667,14 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       debug('User joined group call', {
         username,
         call: summarizeCall(call),
+        callRoom: `group-call:${call.callId}`,
+        rooms: Array.from(socket.rooms || []),
         beforeParticipantUsernames: beforeParticipants.map(
           (participant) => participant.username
         ),
       });
 
-      return ack({
+      return respondSuccess(ack, {
         ok: true,
         call,
       });
@@ -408,12 +685,111 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         payload,
       });
 
-      emitError(socket, 'Could not join group call');
-      return ack({ ok: false, message: 'Could not join group call' });
+      return respondError(socket, ack, 'Could not join group call');
     }
   });
 
-  socket.on(GROUP_CALL_EVENTS.leave, (payload = {}, ack = () => {}) => {
+  socket.on(GROUP_CALL_EVENTS.rejoin, (payload = {}, ack) => {
+    const username = getSocketUsername(socket);
+
+    try {
+      const { callId, groupId, roomId } = payload;
+      const activeCallsBefore = groupCallService.getDebugSnapshot();
+      const foundCallResult = groupCallService.getGroupCall(callId);
+      const foundCall = foundCallResult.ok ? foundCallResult.data : null;
+      const existingParticipant = groupCallService.getParticipant({ callId, username });
+
+      debug('Received group-call:rejoin', {
+        callId,
+        groupId: groupId || null,
+        roomId: roomId || null,
+        username,
+        socketId: socket.id,
+        userSockets: getUserSocketDebug(username),
+        activeGroupCalls: activeCallsBefore,
+        callFound: Boolean(foundCall),
+        existingParticipant: Boolean(existingParticipant),
+        participantsBeforeRejoin: foundCall?.participants || [],
+        roomsBeforeRejoin: Array.from(socket.rooms || []),
+      });
+
+      const beforeParticipantsResult = groupCallService.getParticipants(callId);
+      const beforeParticipants = beforeParticipantsResult.ok
+        ? beforeParticipantsResult.data
+        : [];
+
+      const result = groupCallService.joinGroupCall({
+        callId,
+        username,
+        socketId: socket.id,
+      });
+
+      if (!result.ok) {
+        return respondError(socket, ack, result.error, {
+          eventName: GROUP_CALL_EVENTS.rejoin,
+          callId,
+        });
+      }
+
+      const call = result.data;
+      const participant = groupCallService.getParticipant({ callId, username });
+      socket.join(`group-call:${call.callId}`);
+
+      socket.emit(GROUP_CALL_EVENTS.rejoined, {
+        callId: call.callId,
+        groupId: call.groupId,
+        call,
+        participant,
+        participants: call.participants,
+        rejoined: true,
+      });
+
+      emitToParticipants(
+        io,
+        beforeParticipants,
+        GROUP_CALL_EVENTS.userJoined,
+        {
+          callId: call.callId,
+          groupId: call.groupId,
+          username,
+          participant,
+          participants: call.participants,
+          rejoined: true,
+        },
+        username
+      );
+
+      debug('User rejoined group call', {
+        username,
+        call: summarizeCall(call),
+        callRoom: `group-call:${call.callId}`,
+        rooms: Array.from(socket.rooms || []),
+        previousParticipantUsernames: beforeParticipants.map(
+          (participantItem) => participantItem.username
+        ),
+        receiverSocketMap: beforeParticipants
+          .filter((participantItem) => participantItem.username !== username)
+          .map((participantItem) => getUserSocketDebug(participantItem.username)),
+      });
+
+      return respondSuccess(ack, {
+        ok: true,
+        call,
+        participant,
+        rejoined: true,
+      });
+    } catch (error) {
+      errorLog('group-call:rejoin failed', error, {
+        username,
+        socketId: socket.id,
+        payload,
+      });
+
+      return respondError(socket, ack, 'Could not rejoin group call');
+    }
+  });
+
+  socket.on(GROUP_CALL_EVENTS.leave, (payload = {}, ack) => {
     const username = getSocketUsername(socket);
 
     try {
@@ -431,11 +807,14 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!result.ok) {
-        emitError(socket, result.error, { eventName: GROUP_CALL_EVENTS.leave, callId });
-        return ack({ ok: false, message: result.error });
+        return respondError(socket, ack, result.error, {
+          eventName: GROUP_CALL_EVENTS.leave,
+          callId,
+        });
       }
 
       const { call, previousParticipants, isEnded } = result.data;
+      socket.leave(`group-call:${callId}`);
 
       if (isEnded) {
         emitToParticipants(io, previousParticipants, GROUP_CALL_EVENTS.ended, {
@@ -465,7 +844,7 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         remainingCall: summarizeCall(call),
       });
 
-      return ack({
+      return respondSuccess(ack, {
         ok: true,
         call,
         isEnded,
@@ -477,12 +856,11 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         payload,
       });
 
-      emitError(socket, 'Could not leave group call');
-      return ack({ ok: false, message: 'Could not leave group call' });
+      return respondError(socket, ack, 'Could not leave group call');
     }
   });
 
-  socket.on(GROUP_CALL_EVENTS.end, (payload = {}, ack = () => {}) => {
+  socket.on(GROUP_CALL_EVENTS.end, (payload = {}, ack) => {
     const username = getSocketUsername(socket);
 
     try {
@@ -500,11 +878,14 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!result.ok) {
-        emitError(socket, result.error, { eventName: GROUP_CALL_EVENTS.end, callId });
-        return ack({ ok: false, message: result.error });
+        return respondError(socket, ack, result.error, {
+          eventName: GROUP_CALL_EVENTS.end,
+          callId,
+        });
       }
 
       const { call, previousParticipants } = result.data;
+      socket.leave(`group-call:${callId}`);
 
       emitToParticipants(io, previousParticipants, GROUP_CALL_EVENTS.ended, {
         callId,
@@ -520,7 +901,7 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         call: summarizeCall(call),
       });
 
-      return ack({
+      return respondSuccess(ack, {
         ok: true,
         call,
       });
@@ -531,12 +912,11 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         payload,
       });
 
-      emitError(socket, 'Could not end group call');
-      return ack({ ok: false, message: 'Could not end group call' });
+      return respondError(socket, ack, 'Could not end group call');
     }
   });
 
-  socket.on(GROUP_CALL_EVENTS.offer, (payload = {}, ack = () => {}) => {
+  socket.on(GROUP_CALL_EVENTS.offer, (payload = {}, ack) => {
     const fromUsername = getSocketUsername(socket);
 
     try {
@@ -550,8 +930,10 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!offer) {
-        emitError(socket, 'offer is required', { callId, targetUsername });
-        return ack({ ok: false, message: 'offer is required' });
+        return respondError(socket, ack, 'offer is required', {
+          callId,
+          targetUsername,
+        });
       }
 
       const valid = validateSignalingParticipant({
@@ -562,8 +944,18 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!valid) {
-        return ack({ ok: false, message: 'Invalid group call offer relay' });
+        return respondError(socket, ack, 'Invalid group call offer relay', {
+          callId,
+          targetUsername,
+        });
       }
+
+      debug('SEND OFFER', {
+        callId,
+        fromUsername,
+        targetUsername,
+        target: getUserSocketDebug(targetUsername),
+      });
 
       emitToUser(io, targetUsername, GROUP_CALL_EVENTS.offer, {
         callId,
@@ -571,7 +963,7 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         offer,
       });
 
-      return ack({ ok: true });
+      return respondSuccess(ack, { ok: true });
     } catch (error) {
       errorLog('group-call:offer failed', error, {
         fromUsername,
@@ -582,12 +974,11 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         },
       });
 
-      emitError(socket, 'Could not relay group call offer');
-      return ack({ ok: false, message: 'Could not relay group call offer' });
+      return respondError(socket, ack, 'Could not relay group call offer');
     }
   });
 
-  socket.on(GROUP_CALL_EVENTS.answer, (payload = {}, ack = () => {}) => {
+  socket.on(GROUP_CALL_EVENTS.answer, (payload = {}, ack) => {
     const fromUsername = getSocketUsername(socket);
 
     try {
@@ -601,8 +992,10 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!answer) {
-        emitError(socket, 'answer is required', { callId, targetUsername });
-        return ack({ ok: false, message: 'answer is required' });
+        return respondError(socket, ack, 'answer is required', {
+          callId,
+          targetUsername,
+        });
       }
 
       const valid = validateSignalingParticipant({
@@ -613,8 +1006,18 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!valid) {
-        return ack({ ok: false, message: 'Invalid group call answer relay' });
+        return respondError(socket, ack, 'Invalid group call answer relay', {
+          callId,
+          targetUsername,
+        });
       }
+
+      debug('SEND ANSWER', {
+        callId,
+        fromUsername,
+        targetUsername,
+        target: getUserSocketDebug(targetUsername),
+      });
 
       emitToUser(io, targetUsername, GROUP_CALL_EVENTS.answer, {
         callId,
@@ -622,7 +1025,7 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         answer,
       });
 
-      return ack({ ok: true });
+      return respondSuccess(ack, { ok: true });
     } catch (error) {
       errorLog('group-call:answer failed', error, {
         fromUsername,
@@ -633,12 +1036,11 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         },
       });
 
-      emitError(socket, 'Could not relay group call answer');
-      return ack({ ok: false, message: 'Could not relay group call answer' });
+      return respondError(socket, ack, 'Could not relay group call answer');
     }
   });
 
-  socket.on(GROUP_CALL_EVENTS.iceCandidate, (payload = {}, ack = () => {}) => {
+  socket.on(GROUP_CALL_EVENTS.iceCandidate, (payload = {}, ack) => {
     const fromUsername = getSocketUsername(socket);
 
     try {
@@ -652,8 +1054,10 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!candidate) {
-        emitError(socket, 'candidate is required', { callId, targetUsername });
-        return ack({ ok: false, message: 'candidate is required' });
+        return respondError(socket, ack, 'candidate is required', {
+          callId,
+          targetUsername,
+        });
       }
 
       const valid = validateSignalingParticipant({
@@ -664,8 +1068,19 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!valid) {
-        return ack({ ok: false, message: 'Invalid group call ice candidate relay' });
+        return respondError(socket, ack, 'Invalid group call ice candidate relay', {
+          callId,
+          targetUsername,
+        });
       }
+
+      debug('SEND ICE', {
+        callId,
+        fromUsername,
+        targetUsername,
+        candidate: describeCandidate(candidate),
+        target: getUserSocketDebug(targetUsername),
+      });
 
       emitToUser(io, targetUsername, GROUP_CALL_EVENTS.iceCandidate, {
         callId,
@@ -673,7 +1088,7 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         candidate,
       });
 
-      return ack({ ok: true });
+      return respondSuccess(ack, { ok: true });
     } catch (error) {
       errorLog('group-call:ice-candidate failed', error, {
         fromUsername,
@@ -684,15 +1099,11 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         },
       });
 
-      emitError(socket, 'Could not relay group call ice candidate');
-      return ack({
-        ok: false,
-        message: 'Could not relay group call ice candidate',
-      });
+      return respondError(socket, ack, 'Could not relay group call ice candidate');
     }
   });
 
-  socket.on(GROUP_CALL_EVENTS.mediaState, (payload = {}, ack = () => {}) => {
+  socket.on(GROUP_CALL_EVENTS.mediaState, (payload = {}, ack) => {
     const username = getSocketUsername(socket);
 
     try {
@@ -713,11 +1124,10 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
 
       if (!result.ok) {
-        emitError(socket, result.error, {
+        return respondError(socket, ack, result.error, {
           eventName: GROUP_CALL_EVENTS.mediaState,
           callId,
         });
-        return ack({ ok: false, message: result.error });
       }
 
       const call = result.data;
@@ -744,7 +1154,7 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         videoEnabled,
       });
 
-      return ack({
+      return respondSuccess(ack, {
         ok: true,
         call,
       });
@@ -755,13 +1165,102 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         payload,
       });
 
-      emitError(socket, 'Could not update group call media state');
-      return ack({
-        ok: false,
-        message: 'Could not update group call media state',
-      });
+      return respondError(socket, ack, 'Could not update group call media state');
     }
   });
+
+  // Group Screen Share UI events (only notify UI, does not affect WebRTC)
+  function handleGroupScreenShareEvent(isSharing) {
+    return (payload = {}, ack) => {
+      const username = getSocketUsername(socket);
+      const { callId, groupId } = payload;
+      const eventName = isSharing
+        ? 'group-call:screen-share-started'
+        : 'group-call:screen-share-stopped';
+
+      try {
+        debug('Received group screen-share event', {
+          username,
+          socketId: socket.id,
+          callId,
+          groupId,
+          isSharing,
+        });
+
+        if (!callId) {
+          return respondError(socket, ack, 'callId is required', {
+            eventName,
+          });
+        }
+
+        if (!isUserInCall(callId, username)) {
+          return respondError(socket, ack, 'Sender is not in group call', {
+            callId,
+            groupId,
+            username,
+          });
+        }
+
+        const participantsResult = groupCallService.getParticipants(callId);
+        if (!participantsResult.ok) {
+          return respondError(
+            socket,
+            ack,
+            participantsResult.error || 'Could not get group call participants',
+            {
+              callId,
+              groupId,
+            }
+          );
+        }
+
+        const broadcastPayload = {
+          callId,
+          groupId: groupId || null,
+          username,
+          socketId: socket.id,
+          isScreenSharing: isSharing,
+          timestamp: Date.now(),
+        };
+
+        emitToParticipants(
+          io,
+          participantsResult.data,
+          eventName,
+          broadcastPayload,
+          username
+        );
+
+        safeAck(ack, {
+          ok: true,
+          ...broadcastPayload,
+        });
+
+        debug(`${eventName} broadcast`, {
+          callId,
+          groupId: broadcastPayload.groupId,
+          username,
+          isSharing,
+        });
+      } catch (error) {
+        errorLog('group screen-share event failed', error, {
+          username,
+          callId,
+          groupId,
+          isSharing,
+        });
+
+        return respondError(socket, ack, 'Could not update group screen share state', {
+          callId,
+          groupId,
+          isSharing,
+        });
+      }
+    };
+  }
+
+  socket.on('group-call:screen-share-started', handleGroupScreenShareEvent(true));
+  socket.on('group-call:screen-share-stopped', handleGroupScreenShareEvent(false));
 
   socket.on('disconnect', (reason) => {
     const username = getSocketUsername(socket);
@@ -772,47 +1271,17 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
         socketId: socket.id,
         reason,
         stillOnline: presenceStore.isOnline(username),
+        cleanupDelayMs: DISCONNECT_CLEANUP_DELAY_MS,
       });
 
-      if (presenceStore.isOnline(username)) {
-        debug('Skip group call cleanup because user still has other sockets online', {
-          username,
-          socketId: socket.id,
-        });
-        return;
-      }
+      setTimeout(() => {
+        cleanupDisconnectedGroupCallSocket(io, socket, reason);
+      }, DISCONNECT_CLEANUP_DELAY_MS);
 
-      const result = groupCallService.removeParticipantFromAllCalls(username);
-
-      if (!result.ok) {
-        warn('removeParticipantFromAllCalls failed on disconnect', {
-          username,
-          error: result.error,
-        });
-        return;
-      }
-
-      result.data.forEach((call) => {
-        if (!call) return;
-
-        emitToParticipants(
-          io,
-          call.participants,
-          GROUP_CALL_EVENTS.userLeft,
-          {
-            callId: call.callId,
-            groupId: call.groupId,
-            username,
-            participants: call.participants,
-            reason: 'disconnect',
-          },
-          username
-        );
-      });
-
-      debug('Group call disconnect cleanup finished', {
+      debug('Group call disconnect cleanup scheduled', {
         username,
-        affectedCalls: result.data.length,
+        socketId: socket.id,
+        delayMs: DISCONNECT_CLEANUP_DELAY_MS,
       });
     } catch (error) {
       errorLog('group call disconnect cleanup failed', error, {
@@ -822,50 +1291,4 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
       });
     }
   });
-
-  // ── Group Screen Share UI events (chỉ để báo UI, không ảnh hưởng WebRTC) ──
-
-  function handleGroupScreenShareEvent(isSharing) {
-    return (payload = {}) => {
-      const username = getSocketUsername(socket);
-      const { callId, groupId } = payload;
-
-      try {
-        if (!callId) {
-          warn(`group screen-share event ignored: missing callId`, { username });
-          return;
-        }
-
-        if (!isUserInCall(callId, username)) {
-          warn('group screen-share rejected: sender not in call', { callId, username });
-          return;
-        }
-
-        const participantsResult = groupCallService.getParticipants(callId);
-        if (!participantsResult.ok) return;
-
-        const eventName = isSharing ? 'group-call:screen-share-started' : 'group-call:screen-share-stopped';
-
-        emitToParticipants(
-          io,
-          participantsResult.data,
-          eventName,
-          {
-            callId,
-            groupId: groupId || null,
-            username,
-            isScreenSharing: isSharing,
-          },
-          username
-        );
-
-        debug(`${eventName} broadcast`, { callId, username, isSharing });
-      } catch (error) {
-        errorLog(`group screen-share event failed`, error, { username, callId });
-      }
-    };
-  }
-
-  socket.on('group-call:screen-share-started', handleGroupScreenShareEvent(true));
-  socket.on('group-call:screen-share-stopped', handleGroupScreenShareEvent(false));
-};
+};

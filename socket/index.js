@@ -40,6 +40,12 @@ module.exports = function configureSockets(io) {
         });
         // Tham gia room riêng của user để nhận tín hiệu cá nhân (như call)
         socket.join(`user:${socket.user.username}`);
+        debugSocket('[GroupCall][Socket] user room joined for group call delivery.', {
+            username: socket.user.username,
+            socketId: socket.id,
+            room: `user:${socket.user.username}`,
+            rooms: Array.from(socket.rooms || []),
+        });
         
         // Đăng ký connection vào presenceStore
         presenceStore.registerConnection(socket.user, socket.id);

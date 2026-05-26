@@ -38,6 +38,17 @@ function snapshotCall(call) {
   };
 }
 
+function getDebugSnapshot() {
+  const calls = Array.from(activeGroupCallsByCallId.values()).map(snapshotCall);
+
+  return {
+    callIds: Array.from(activeGroupCallsByCallId.keys()),
+    groupIds: Array.from(activeGroupCallsByGroupId.keys()),
+    groupToCallId: Object.fromEntries(activeGroupCallsByGroupId.entries()),
+    calls,
+  };
+}
+
 function createCallId(groupId) {
   const callId = `group-call-${groupId}-${Date.now()}-${Math.random()
     .toString(36)
@@ -72,6 +83,22 @@ function serializeCall(call) {
     endedAt: call.endedAt || null,
     participants: Array.from(call.participants.values()).map(cloneParticipant),
   };
+}
+
+function transferCreatorIfNeeded(call, removedUsername) {
+  if (!call || call.creatorUsername !== removedUsername || call.participants.size === 0) {
+    return;
+  }
+
+  const nextCreator = Array.from(call.participants.keys())[0];
+  call.creatorUsername = nextCreator;
+
+  debug('Transferred group call creator after disconnect/leave', {
+    callId: call.callId,
+    groupId: call.groupId,
+    removedUsername,
+    nextCreator,
+  });
 }
 
 function startGroupCall({ groupId, creatorUsername, socketId }) {
@@ -227,6 +254,7 @@ function removeParticipant({ callId, username }) {
   }
 
   const existed = call.participants.delete(username);
+  transferCreatorIfNeeded(call, username);
 
   debug('Participant removed', {
     callId,
@@ -395,6 +423,7 @@ function removeParticipantFromAllCalls(username) {
   for (const call of activeGroupCallsByCallId.values()) {
     if (call.participants.has(username)) {
       call.participants.delete(username);
+      transferCreatorIfNeeded(call, username);
 
       debug('Participant removed from active call during cleanup', {
         username,
@@ -421,6 +450,86 @@ function removeParticipantFromAllCalls(username) {
   return affectedCalls;
 }
 
+function removeParticipantBySocketId(socketId) {
+  debug('removeParticipantBySocketId called', { socketId });
+
+  if (!socketId) {
+    warn('removeParticipantBySocketId ignored because socketId missing');
+    return [];
+  }
+
+  const affectedCalls = [];
+
+  for (const call of activeGroupCallsByCallId.values()) {
+    const participant = Array.from(call.participants.values()).find(
+      (item) => item.socketId === socketId
+    );
+
+    if (!participant) continue;
+
+    call.participants.delete(participant.username);
+    transferCreatorIfNeeded(call, participant.username);
+
+    debug('Participant removed from active call by socket cleanup', {
+      username: participant.username,
+      socketId,
+      callId: call.callId,
+      groupId: call.groupId,
+      remainingParticipants: call.participants.size,
+    });
+
+    if (call.participants.size === 0) {
+      debug('Socket cleanup ending empty group call', { callId: call.callId });
+      endGroupCall(call.callId);
+      affectedCalls.push({
+        call: null,
+        previousUsername: participant.username,
+        previousSocketId: socketId,
+      });
+    } else {
+      affectedCalls.push({
+        call: serializeCall(call),
+        previousUsername: participant.username,
+        previousSocketId: socketId,
+      });
+    }
+  }
+
+  return affectedCalls;
+}
+
+function cleanupStaleCalls({ maxAgeMs = 6 * 60 * 60 * 1000 } = {}) {
+  const now = Date.now();
+  const removedCalls = [];
+
+  for (const call of Array.from(activeGroupCallsByCallId.values())) {
+    const isEmpty = call.participants.size === 0;
+    const isTooOld = now - call.startedAt > maxAgeMs;
+
+    if (!isEmpty && !isTooOld) continue;
+
+    const endedCall = endGroupCall(call.callId);
+
+    removedCalls.push({
+      reason: isEmpty ? 'empty' : 'stale',
+      call: endedCall,
+    });
+  }
+
+  if (removedCalls.length > 0) {
+    debug('cleanupStaleCalls removed calls', {
+      removedCount: removedCalls.length,
+      removedCalls: removedCalls.map((item) => ({
+        reason: item.reason,
+        callId: item.call?.callId || null,
+        groupId: item.call?.groupId || null,
+      })),
+    });
+  }
+
+  return removedCalls;
+}
+
 module.exports = {
   startGroupCall,
   getGroupCall,
@@ -434,4 +543,7 @@ module.exports = {
   getParticipants,
   endGroupCall,
   removeParticipantFromAllCalls,
+  removeParticipantBySocketId,
+  cleanupStaleCalls,
+  getDebugSnapshot,
 };

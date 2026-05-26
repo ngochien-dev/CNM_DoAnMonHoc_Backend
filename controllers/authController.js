@@ -125,7 +125,8 @@ exports.login = async (req, res) => {
         const { username, password } = req.body;
         const user = await User.findByUsername(username);
         if (!user || !user.isVerified) return res.status(401).json({ message: "Tài khoản sai hoặc chưa xác thực!" });
-        if (user.isBanned) return res.status(403).json({ message: "Tài khoản đã bị khóa!" });
+        if (user.isBanned) return res.status(403).json({ message: "Tài khoản đã bị khóa bởi hệ thống!" });
+        if (user.isSelfLocked) return res.status(403).json({ message: "Tài khoản của bạn đã bị khóa tạm thời. Vui lòng mở khóa để tiếp tục!", isSelfLocked: true });
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(401).json({ message: "Sai mật khẩu!" });
@@ -259,5 +260,109 @@ exports.changePassword = async (req, res) => {
             req.app.get('io').emit('force_logout', { username, reason: 'password_changed' });
         }
         res.json({ success: true, message: "Đổi mật khẩu thành công!" });
+    } catch (err) { res.status(500).json({ message: err.message }); }
+};
+
+// 7. Yêu cầu khóa tài khoản (Sinh OTP)
+exports.requestAccountLock = async (req, res) => {
+    try {
+        const username = req.auth.username;
+        const user = await User.findByUsername(username);
+        if (!user) return res.status(404).json({ message: "Không tìm thấy người dùng!" });
+        if (user.isSelfLocked) return res.status(400).json({ message: "Tài khoản đã bị khóa từ trước!" });
+
+        const lockOtp = Math.floor(100000 + Math.random() * 900000).toString();
+        await docClient.update({
+            TableName: 'Users', Key: { username },
+            UpdateExpression: "set lockOtp = :o",
+            ExpressionAttributeValues: { ":o": lockOtp }
+        }).promise();
+
+        await transporter.sendMail({
+            from: '"OTT Security" <security@ott.com>',
+            to: user.email,
+            subject: "Mã xác thực Khóa tài khoản khẩn cấp",
+            html: `<p>Bạn vừa yêu cầu khóa tài khoản khẩn cấp.</p><p>Mã OTP của bạn là: <b style="color:red;font-size:20px;">${lockOtp}</b></p><p>Vui lòng không chia sẻ mã này cho bất kỳ ai!</p>`
+        });
+        res.json({ message: "OTP khóa tài khoản đã được gửi!" });
+    } catch (err) { res.status(500).json({ message: err.message }); }
+};
+
+// 8. Xác nhận khóa tài khoản
+exports.confirmAccountLock = async (req, res) => {
+    try {
+        const username = req.auth.username;
+        const { otp } = req.body;
+        const user = await User.findByUsername(username);
+        
+        if (!user || user.lockOtp !== otp) {
+            return res.status(400).json({ message: "Mã OTP không chính xác!" });
+        }
+
+        await docClient.update({
+            TableName: 'Users', Key: { username },
+            UpdateExpression: "set isSelfLocked = :l remove lockOtp",
+            ExpressionAttributeValues: { ":l": true }
+        }).promise();
+
+        if (req.app.get('io')) {
+            req.app.get('io').emit('force_logout', { username, reason: 'account_locked' });
+        }
+        res.json({ message: "Tài khoản đã được khóa thành công!" });
+    } catch (err) { res.status(500).json({ message: err.message }); }
+};
+
+// 9. Yêu cầu mở khóa tài khoản (Public)
+exports.requestAccountUnlock = async (req, res) => {
+    try {
+        const { email } = req.body;
+        const result = await docClient.scan({
+            TableName: 'Users',
+            FilterExpression: "email = :e",
+            ExpressionAttributeValues: { ":e": email }
+        }).promise();
+
+        if (result.Count === 0) return res.status(404).json({ message: "Email chưa đăng ký!" });
+        
+        const user = result.Items[0];
+        if (!user.isSelfLocked) return res.status(400).json({ message: "Tài khoản của bạn không bị khóa!" });
+
+        const unlockOtp = Math.floor(100000 + Math.random() * 900000).toString();
+        await docClient.update({
+            TableName: 'Users', Key: { username: user.username },
+            UpdateExpression: "set unlockOtp = :o",
+            ExpressionAttributeValues: { ":o": unlockOtp }
+        }).promise();
+
+        await transporter.sendMail({
+            from: '"OTT Security" <security@ott.com>',
+            to: email,
+            subject: "Mã xác thực Mở khóa tài khoản",
+            html: `<p>Mã OTP mở khóa tài khoản của bạn là: <b style="color:green;font-size:20px;">${unlockOtp}</b></p>`
+        });
+        res.json({ message: "OTP mở khóa đã gửi!" });
+    } catch (err) { res.status(500).json({ message: err.message }); }
+};
+
+// 10. Xác nhận mở khóa tài khoản (Public)
+exports.confirmAccountUnlock = async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        const result = await docClient.scan({
+            TableName: 'Users',
+            FilterExpression: "email = :e AND unlockOtp = :o",
+            ExpressionAttributeValues: { ":e": email, ":o": otp }
+        }).promise();
+
+        if (result.Count === 0) return res.status(400).json({ message: "OTP hoặc Email không đúng!" });
+
+        const user = result.Items[0];
+        await docClient.update({
+            TableName: 'Users', Key: { username: user.username },
+            UpdateExpression: "set isSelfLocked = :l remove unlockOtp",
+            ExpressionAttributeValues: { ":l": false }
+        }).promise();
+
+        res.json({ message: "Mở khóa tài khoản thành công! Bạn có thể đăng nhập lại." });
     } catch (err) { res.status(500).json({ message: err.message }); }
 };
