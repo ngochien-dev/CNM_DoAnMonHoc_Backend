@@ -1169,6 +1169,99 @@ module.exports = function registerGroupCallSocket({ io, socket }) {
     }
   });
 
+  // Group Screen Share UI events (only notify UI, does not affect WebRTC)
+  function handleGroupScreenShareEvent(isSharing) {
+    return (payload = {}, ack) => {
+      const username = getSocketUsername(socket);
+      const { callId, groupId } = payload;
+      const eventName = isSharing
+        ? 'group-call:screen-share-started'
+        : 'group-call:screen-share-stopped';
+
+      try {
+        debug('Received group screen-share event', {
+          username,
+          socketId: socket.id,
+          callId,
+          groupId,
+          isSharing,
+        });
+
+        if (!callId) {
+          return respondError(socket, ack, 'callId is required', {
+            eventName,
+          });
+        }
+
+        if (!isUserInCall(callId, username)) {
+          return respondError(socket, ack, 'Sender is not in group call', {
+            callId,
+            groupId,
+            username,
+          });
+        }
+
+        const participantsResult = groupCallService.getParticipants(callId);
+        if (!participantsResult.ok) {
+          return respondError(
+            socket,
+            ack,
+            participantsResult.error || 'Could not get group call participants',
+            {
+              callId,
+              groupId,
+            }
+          );
+        }
+
+        const broadcastPayload = {
+          callId,
+          groupId: groupId || null,
+          username,
+          socketId: socket.id,
+          isScreenSharing: isSharing,
+          timestamp: Date.now(),
+        };
+
+        emitToParticipants(
+          io,
+          participantsResult.data,
+          eventName,
+          broadcastPayload,
+          username
+        );
+
+        safeAck(ack, {
+          ok: true,
+          ...broadcastPayload,
+        });
+
+        debug(`${eventName} broadcast`, {
+          callId,
+          groupId: broadcastPayload.groupId,
+          username,
+          isSharing,
+        });
+      } catch (error) {
+        errorLog('group screen-share event failed', error, {
+          username,
+          callId,
+          groupId,
+          isSharing,
+        });
+
+        return respondError(socket, ack, 'Could not update group screen share state', {
+          callId,
+          groupId,
+          isSharing,
+        });
+      }
+    };
+  }
+
+  socket.on('group-call:screen-share-started', handleGroupScreenShareEvent(true));
+  socket.on('group-call:screen-share-stopped', handleGroupScreenShareEvent(false));
+
   socket.on('disconnect', (reason) => {
     const username = getSocketUsername(socket);
 
