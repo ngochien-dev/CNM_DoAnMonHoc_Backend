@@ -6,6 +6,10 @@ Tài liệu này cung cấp cái nhìn toàn diện về kiến trúc hệ thố
 
 ---
 
+Link sản phẩm: https://ngochien-ott.duckdns.org/chat
+
+---
+
 ## 🎯 Tổng quan Kiến trúc (Overview)
 
 **OTT Backend** là một **REST API + WebSocket server** hiệu năng cao được xây dựng trên Node.js, cung cấp hệ sinh thái hoàn chỉnh cho một siêu ứng dụng:
